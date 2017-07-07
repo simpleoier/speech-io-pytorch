@@ -86,10 +86,10 @@ class HTKDataset(object):
                 cur_data[i]['dim'] = cur_config_parms[i]['dim']
                 cur_data[i]['data_type'] = cur_config_parms[i]['type']
 
-                if cur_data[i]['cur_data_type'] == "MLF":
+                if cur_data[i]['data_type'] == "MLF":
                     cur_data[i]['type'] = cur_config_parms[i]['label_type']
                     (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['nframes'], cur_data[i]['label_mapping'], cur_data[i]['nUtts']) = self.read_MLF(file_name, cur_config_parms[i])
-                elif cur_attr_dict['cur_data_type'][i] == "SCP":
+                elif cur_attr_dict['data_type'][i] == "SCP":
                     cur_data[i]['context_window'] = cur_config_parms[i]['context_window'] if 'context_window' in cur_config_parms[i] else (0, 0)
                     (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['nframes'], cur_data[i]['nUtts']) = self.read_SCP(file_name, cur_config_parms[i])
 
