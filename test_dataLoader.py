@@ -25,16 +25,17 @@ for i in range(len(feat_config_parms)):
 '''
 for i in range(len(feat_config_parms)):
     data = HTKDataset(feat_config_parms[i], label_config_parms[i])
-    print(data.feat_nUtts, data.feat_nframes)
-    print(data.label_nUtts, data.label_nframes)
-    print(data.feats)
-    print(data.labels)
-    if data.labels is None: continue
-    for (key,value) in data.labels.items():
+    print(data[0]['nUtts'], data[0]['nframes'])
+    print(data[1]['nUtts'], data[1]['nframes'])
+    print(data[0]['data'])
+    print(data[1]['data'])
+    if data[1]['data'] is None: continue
+    for (key,value) in data[1]['data'].items():
         print(value.shape)
-    print(data.label_label_mapping)
+    print(data[1]['label_mapping'])
 finish = clock()
 print((finish - start) / 1000000)
+exit()
 """
  Test htk_io
 """

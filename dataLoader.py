@@ -16,17 +16,19 @@ class HTKDataset(object):
     """
      HTK Data set. Provides an interface for features of HTK format
     """
-    def __init__(self, input_config_parms, target_config_parms):
+    def __init__(self, input_config_parms, target_config_parms, max_utt_len=0):
         """
          [input, target]config_parms (dict or dict_list):
-             file_name (string): Path to scp file or mlf file
+             file_name (string): Path to SCP file or MLF file
              type("MLF" or "SCP"),
-             SCP type: dim(int), context_window(tuple), max_utt_len(int),
-             MLF type: dim(int), label_mapping(file_path), type("category"). Only in label.
+                SCP type: dim(int), context_window(tuple),
+                MLF type: dim(int), label_mapping(file_path), type("category"). Only in label.
              If only one argument is given for feat or label, then the output is an arg
              instead of a list.
+         :max_utt_len: int, max utterance length permitted, so we can drop utterances longer than it
+
          Note:
-             1. multiple input scp should have compatible keys and the same order is preferrable 
+             1. multiple input SCP should have compatible keys and the same order is preferrable 
                 but not necessary.
              2. Attributes:
                 :dim:       int, dimension, usually 39,40,80 for input feature, and 4009 for target
@@ -35,7 +37,6 @@ class HTKDataset(object):
                 :data:      feature path or label
                 :nUtts:     int, number of utterances
                 :nframes:   int list, number of frames for each utt
-                :max_utt_len: int, max utterance length permitted, so we can drop utterances longer than it
                 :context_window: tuple, context window size
                 :label_mapping: label_mapping, from int to label
                 :name2idx:  dictionary, 
@@ -55,11 +56,11 @@ class HTKDataset(object):
         target = []
         self.ninputs   = len(input_config_parms)      # number of input  data
         self.ntargets  = len(target_config_parms)     # number of target data
+        self.max_utt_len = max_utt_len
 
         """ Define all possible attributes for data and labels """
         base_attributes  = ['dim', 'data_type', 'type', 'data', 'nUtts', 'nframes',
-                            'max_utt_len', 'context_window', 'label_mapping',
-                            'list']
+                            'context_window', 'label_mapping', 'name2idx']
         nattributes = len(base_attributes)
 
         """ For loop convenience """
@@ -74,112 +75,114 @@ class HTKDataset(object):
             cur_attributes   = attributes[attr_idx]
             data_cnt         = getattr(self, "n{0}s".format(data_prefix[attr_idx])) # ninputs/ntargets
             
+            """ initialize to None """
             for i in range(data_cnt):
                 cur_data.append({})
                 for j in range(nattributes):
                     cur_data[-1][base_attributes[j]] = None
 
             for i in range(data_cnt):   # input or output index, when multiple input or output
-                file_name = cur_config_parms[i]['file_name']
+                file_name = cur_config_parms[i]['file_name']    # SCP or MLF File
 
-                cur_attr_dict['cur_dim'][i] = cur_config_parms[i]['dim']
-                cur_attr_dict['cur_data_type'][i] = cur_config_parms[i]['type']
-                if cur_attr_dict['cur_data_type'][i] == "MLF":
-                    if (attr_idx == 0):
-                        raise Exception("Currently, MLF format does not support as feature")
-                    cur_attr_dict['cur_type'][i], cur_attr_dict['curs'][i], cur_attr_dict['cur_nUtts'][i], cur_attr_dict['cur_nframes'][i], cur_attr_dict['cur_label_mapping'][i] = self.read_mlf(file_name, cur_config_parms[i])
+                cur_data[i]['dim'] = cur_config_parms[i]['dim']
+                cur_data[i]['data_type'] = cur_config_parms[i]['type']
+
+                if cur_data[i]['cur_data_type'] == "MLF":
+                    cur_data[i]['type'] = cur_config_parms[i]['label_type']
+                    (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['nframes'], cur_data[i]['label_mapping'], cur_data[i]['nUtts']) = self.read_MLF(file_name, cur_config_parms[i])
                 elif cur_attr_dict['cur_data_type'][i] == "SCP":
-                    cur_attr_dict['cur_context_window'][i], cur_attr_dict['curs'][i], cur_attr_dict['cur_list'][i], cur_attr_dict['cur_nframes'][i], cur_attr_dict['cur_nUtts'][i], cur_attr_dict['cur_max_utt_len'][i] = self.read_scp(file_name, cur_config_parms[i])
+                    cur_data[i]['context_window'] = cur_config_parms[i]['context_window'] if 'context_window' in cur_config_parms[i] else (0, 0)
+                    (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['nframes'], cur_data[i]['nUtts']) = self.read_SCP(file_name, cur_config_parms[i])
 
-            for i in range(len(cur_attributes)):
-                setattr(self, cur_attributes[i], cur_attr_dict[cur_attr_name[i]])
-
-        for i in range(len(attributes)):
+        """ convert list to the first item, when list is not needed """
+        for i in range(len(data)):
             if not list_in[i]:
-                for attr in attributes[i]:
-                    at = getattr(self, attr, None)
-                    setattr(self, attr, at[0])
+                data[i] = data[i][0]
 
-    def read_mlf(self, file_name, config_parms):
+        return (input, target)
+
+    def read_MLF(self, file_name, config_parms):
         """ Function for MLF data type.
               file_name(string),
               config_parms(dictionary)
         """
-        label_mapping_path = config_parms['label_mapping']
-        label_type = config_parms['label_type']
-        code, (labels, nUtts, nframes) = self.read_HTK_MLF(file_name)
-        if (code > 0): raise Exception("An error occurs while reading MLF file(%s), code %d" % (file_name, code))
-        code, label_mapping = self.read_label_mapping(label_mapping_path)
-        if (code > 0): raise Exception("An error occurs while reading label mapping file(%s), code %d" % (label_mapping_path, code))
-        return label_type, labels, nUtts, nframes, label_mapping
+        (labels, name2idx, lab_nframes) = self.read_HTK_MLF(file_name)
+        if 'context_window' in config_parms:
+            label_mapping_path = config_parms['label_mapping']
+            (label_mapping, _) = self.read_label_mapping(label_mapping_path)
+        else:
+            label_mapping = []
+        return (labels, name2idx, lab_nframes, label_mapping, len(labels))
 
 
-    def read_scp(self, file_name, config_parms):
+    def read_SCP(self, file_name):
         """ Function for SCP data type.
               file_name(string),
               config_parms(dictionary)
         """
-        context_window = config_parms['context_window'] if 'context_window' in config_parms else (0, 0)
-        max_utt_len = config_parms['max_utt_len'] if 'max_utt_len' in config_parms else None
-        code, (feats, feats_list, nframes) = self.read_HTK_feats_scp(file_name, max_utt_len)
-        nUtts = len(feats_list)
-        return context_window, feats, feats_list, nframes, nUtts, max_utt_len
+        (feats, name2idx, feat_nframes) = self.read_HTK_feats_SCP(file_name)
+        return (feats, name2idx, feat_nframes, len(feats))
 
 
-    def read_HTK_feats_scp(self, file_name=None, max_utt_len=None):
+    def read_HTK_feats_SCP(self, file_name=None, max_utt_len=None):
         """
-         Read the scp files in HTK format: xxxxxxx.feats=/path/to/xxxxxx.feats[start_position, end_position]
-         Output: code, feats(dictionary, ('name(xxxxxx)':['path(/path/to/xxxxxx.feats)', length] ) ), feats_list(list, all feats names), nframes(int, num of frames in total)
+         Read the SCP files in HTK format: xxxxxxx.feats=/path/to/xxxxxx.feats[start_position, end_position]
+         Output: code, feats(dictionary, ('name(xxxxxx)':['path(/path/to/xxxxxx.feats)', length] ) ), feats_list(list, all feats names), feat_nframes(int list, num of frames of each utt)
                 code: 0: Success
                       1: File path does not exist
                       2: Format has problem
         """
         if (file_name == None or not os.path.exists(file_name)):
-            raise Exception("An error occur while reading scp file(%s), code:%d, File Non-exists" % (file_name, 1))
-        feats = {}
-        feats_list = []
-        nframes = 0
+            raise Exception("An error occur while reading SCP file(%s), code:%d, File Non-exists" % (file_name, 1))
+
+        feats = []
+        name2idx = {}
+        feat_nframes = []
+
         with open(file_name) as file:
             while 1:
                 line = file.readline().strip()
                 if (line==''): break
+
                 feat_name, res_info = line.split('=')
-                feat_name = ".".join(feat_name.split(".")[:-1])
-                l_bracket_p = res_info.find('[')
-                if l_bracket_p is None:
+                feat_name = feat_name.split(".")[: feat_name.rfind('.')]
+                l_bracket_pos = res_info.find('[')
+                if l_bracket_pos is None:
                     """ raise FileFormatError """
-                    raise Exception("An error occur while reading scp file(%s), code:%d, File Format Error" % (file_name, 2))
-                    print("  Error: file format is not compatible %s" % line)
-                    return 2, ({}, [], 0)
-                feat_path = res_info[:l_bracket_p]
-                res_info = res_info[l_bracket_p+1:]
-                comma_p = res_info.find(',')
-                start_position = int(res_info[:comma_p])
-                end_position   = int(res_info[comma_p+1:-1])
+                    raise Exception("An error occur while reading SCP file(%s), code:%d, File Format Error in: %s" % (file_name, 2, line))
+                    return ([], {}, 0, 0)
+
+                feat_path = res_info[:l_bracket_pos]
+                res_info  = res_info[l_bracket_pos+1:]
+                comma_pos = res_info.find(',')
+                start_frame = int(res_info[:comma_pos])
+                end_frame   = int(res_info[comma_pos+1:-1])
                 length = end_position - start_position + 1
                 if (max_utt_len != None and length > max_utt_len): continue     # Omit the utterances that exceed the maximum length limit
 
-                feats_list.append(feat_name)
-                feats[feat_name] = [feat_path, length]
-                nframes += length
+                feats.append(feat_name)
+                feat_nframes.append(length)
+                name2idx[feat_name] = len(feats) - 1
 
-        return 0, (feats, feats_list, nframes)
+        return (feats, name2idx, feat_nframes)
 
 
-    def read_HTK_mlf(self, file_name=None):
+    def read_HTK_MLF(self, file_name=None, delete_toolong=True):
         """
          Read the MLF file in HTK format: #!MLF!# \n "xxxxxx.lab" \n start end lab \n ...
-         Output: code, labels(dictionary, ('name(xxxxxx)': numpy_array_lab)), nUtts(int), nframes(int)
+         Output: labels(list, label list), nframes(int list)
+         :file_name: HTK_MLF file name
+         :delete_toolong: delete the utterance that exceeds the maximum utterance length
         """
         if (file_name == None or not os.path.exists(file_name)):
             """ raise FileNotExistsError """
-            raise Exception("An error occur while reading scp file(%s), code:%d, File Non-exists" % (file_name, 1))
-            return 1, ({}, 0, 0)
-        labels = {}
-        nUtts = 0
-        nframes = 0
+            raise Exception("An error occur while reading MLF file(%s), code:%d, File Non-exists" % (file_name, 1))
+            return ({}, 0, 0)
+        labels = []
+        name2idx = {}
+        lab_nframes = []
 
-        start_mlf = False
+        start_mlf = False   # flag of "#!MLF!#"
         with open(file_name) as file:
             while 1:
                 line = file.readline().strip()
@@ -187,41 +190,49 @@ class HTKDataset(object):
                 if (start_mlf == False):
                     if (line=="#!MLF!#"):
                         start_mlf = True
+                        lab_complete = True
                     else:
                         """ raise FileFormatError """
-                        raise Exception("  An error occur while reading scp file(%s), code:%d, File Format Error" % (file_name, 2))
-                        print("  Error: file format is not compatible in label file")
-                        return 2, ({}, 0, 0)
+                        raise Exception("  An error occur while reading MLF file(%s), code:%d, File Format Error: no #!MLF!# found" % (file_name, 2))
+                        return ({}, 0, 0)
                 if (re.match('^\"[\.a-zA-Z0-9-_]+\.lab\"$', line)):   #label Name
-                    nUtts += 1
-                    feat_name = line[1:-4]
-                    label_list = []
-                    last_time_stamp = 0
-                    label_complete = False
+                    if (not lab_complete):
+                        raise Exception("  An error occur while reading MLF file(%s), code:%d, File Format Error, incomplete label" % (file_name, 2))
+                        return ({}, 0, 0)
+                    lab_length = 0
+                    lab_complete = False
+                    lab_name = line[1 : line.rfind('.lab')]
+                    name2idx[lab_name] = len(labels)
+                    labels.append([])
                 elif (re.match('^[\d]+ [\d]+ [\d]+$', line)):     # labels
                     lst = line.split(' ')
-                    start_position = int(lst[0]) // 100000
-                    end_position   = int(lst[1]) // 100000
-                    nframes += end_position - start_position
-                    label          = int(lst[2])
-                    if (start_position != last_time_stamp):
+                    start_pos  = int(lst[0]) // 100000
+                    end_pos    = int(lst[1]) // 100000
+                    lab_length = end_position
+                    label_item = int(lst[2])
+                    if (start_pos != lab_length):
                         """ raise FileFormatError """
-                        raise Exception("An error occur while reading scp file(%s), code:%d, File Format Error" % (file_name, 2))
-                        print("  Error: file format is not compatible in label file, missing labels")
-                        return 2, ({}, 0, 0)
-                    for i in range(start_position, end_position):
-                        label_list.append(label)
-                    last_time_stamp = end_position
+                        raise Exception("An error occur while reading SCP file(%s), code:%d, File Format Error: missing labels" % (file_name, 2))
+                        return ({}, 0, 0)
+                    for i in range(start_pos, end_pos):
+                        labels[-1].append(label)
                 elif (re.match('^\.$', line)):      # End of current label
-                    labels[feat_name] = np.array(label_list)
                     label_complete = True
+                    if (self.max_utt_len > 0 and delete_toolong):   # delete the label if it exceed the maximum length
+                        del name2idx[lab_name]
+                        del labels[-1]
+                    else:
+                        lab_nframes.append(lab_length)
+                else:
+                    raise Exception("An error occur while reading SCP file(%s), code:%d, File Format Error: unknown format: %s" % (file_name, 2, line))
+                    return ({}, 0, 0)
+
         if not label_complete:
             """ raise FileFormatError """
-            raise Exception("An error occur while reading scp file(%s), code:%d, File Format Error" % (file_name, 2))
-            print("  Error: file format is not compatible in label file, incompleting labels")
-            return 2, ({}, 0, 0)
+            raise Exception("  An error occur while reading MLF file(%s), code:%d, File Format Error, incomplete label" % (file_name, 2))
+            return ({}, 0, 0)
 
-        return 0, (labels, nUtts, nframes)
+        return (labels, name2idx, lab_nframes)
 
 
     def read_label_mapping(self, file_name=None):
@@ -235,7 +246,7 @@ class HTKDataset(object):
         """
         if (file_name == None or not os.path.exists(file_name)):
             """ raise FileNotExistsError """
-            raise Exception("An error occur while reading scp file(%s), code:%d, File Non-exists" % (file_name, 1))
+            raise Exception("An error occur while reading label mapping file(%s), code:%d, File Non-exists" % (file_name, 1))
             return 1, (None)
         label_mapping = []
         label_type_int = True
@@ -248,7 +259,7 @@ class HTKDataset(object):
                 label_mapping.append(line)
         if (label_type_int):
             label_mapping = [int(x) for x in label_mapping]
-        return 0, label_mapping
+        return (label_mapping, label_type_int)
 
 
 def default_collate():
