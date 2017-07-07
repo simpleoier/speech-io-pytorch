@@ -28,7 +28,7 @@ class HTKDataset(object):
          :max_utt_len: int, max utterance length permitted, so we can drop utterances longer than it
 
          Note:
-             1. multiple input SCP should have compatible keys and the same order is preferrable 
+             1. multiple input SCP should have compatible keys and the same order is preferrable
                 but not necessary.
              2. Attributes:
                 :dim:       int, dimension, usually 39,40,80 for input feature, and 4009 for target
@@ -39,7 +39,7 @@ class HTKDataset(object):
                 :nframes:   int list, number of frames for each utt
                 :context_window: tuple, context window size
                 :label_mapping: label_mapping, from int to label
-                :name2idx:  dictionary, 
+                :name2idx:  dictionary,
         """
         """ If reading configures are not lists, convert them to lists """
         input_list_in = True
@@ -73,7 +73,7 @@ class HTKDataset(object):
             cur_data         = data[data_idx]
             cur_config_parms = config_parms[data_idx]
             data_cnt         = getattr(self, "n{0}s".format(data_prefix[data_idx])) # ninputs/ntargets
-            
+
             """ initialize to None """
             for i in range(data_cnt):
                 cur_data.append({})
@@ -89,7 +89,7 @@ class HTKDataset(object):
                 if cur_data[i]['data_type'] == "MLF":
                     cur_data[i]['type'] = cur_config_parms[i]['label_type']
                     (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['nframes'], cur_data[i]['label_mapping'], cur_data[i]['nUtts']) = self.read_MLF(file_name, cur_config_parms[i])
-                elif cur_attr_dict['data_type'][i] == "SCP":
+                elif cur_data[i]['data_type'] == "SCP":
                     cur_data[i]['context_window'] = cur_config_parms[i]['context_window'] if 'context_window' in cur_config_parms[i] else (0, 0)
                     (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['nframes'], cur_data[i]['nUtts']) = self.read_SCP(file_name, cur_config_parms[i])
 
