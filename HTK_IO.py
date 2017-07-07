@@ -28,7 +28,7 @@ _O = 0o020000    # has 0th cepstral coefficient
 _V = 0o040000    # has VQ data
 _T = 0o100000    # has third differential coefficients
 
-def open_htk(f, mode=None, veclen=13, **kargs):
+def HTK_open(f, mode=None, veclen=13, **kargs):
     """ Open an HTK format feature file for reading or writing.
         The mode parameter is 'rb' (reading) or 'wb' (writing).
     """
