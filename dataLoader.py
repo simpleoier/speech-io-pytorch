@@ -52,8 +52,8 @@ class HTKDataset(object):
             target_config_parms = [target_config_parms]
 
         """ return data """
-        input = []
-        target = []
+        self.inputs = []
+        self.targets = []
         self.ninputs   = len(input_config_parms)      # number of input  data
         self.ntargets  = len(target_config_parms)     # number of target data
         self.max_utt_len = max_utt_len
@@ -64,7 +64,7 @@ class HTKDataset(object):
         nattributes = len(base_attributes)
 
         """ For loop convenience """
-        data         = [input, target]
+        data         = [self.inputs, self.targets]
         data_prefix  = ["input", "target"]
         list_in      = [input_list_in, target_list_in]
         config_parms = [input_config_parms, target_config_parms]
@@ -94,11 +94,11 @@ class HTKDataset(object):
                     (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['nframes'], cur_data[i]['nUtts']) = self.read_SCP(file_name)
 
         """ convert list to the first item, when list is not needed """
-        for i in range(len(data)):
-            if not list_in[i]:
-                data[i] = data[i][0]
+        if not input_list_in:
+            self.inputs = self.inputs[0]
+        if not target_list_in:
+            self.targets = self.targets[0]
 
-        return (input, target)
 
     def read_MLF(self, file_name, config_parms):
         """ Function for MLF data type.
@@ -138,13 +138,13 @@ class HTKDataset(object):
         name2idx = {}
         feat_nframes = []
 
-        with open(file_name) as file:
+        with open(file_name, 'r') as file:
             while 1:
                 line = file.readline().strip()
                 if (line==''): break
 
-                feat_name, res_info = line.split('=')
-                feat_name = feat_name.split(".")[: feat_name.rfind('.')]
+                feat_name, res_info = line.split('=')[0:2]
+                feat_name = feat_name[: feat_name.rfind('.')]
                 l_bracket_pos = res_info.find('[')
                 if l_bracket_pos is None:
                     """ raise FileFormatError """
@@ -156,12 +156,15 @@ class HTKDataset(object):
                 comma_pos = res_info.find(',')
                 start_frame = int(res_info[:comma_pos])
                 end_frame   = int(res_info[comma_pos+1:-1])
-                length = end_pos - start_pos + 1
+                length = end_frame - start_frame + 1
                 if (max_utt_len != None and length > max_utt_len): continue     # Omit the utterances that exceed the maximum length limit
 
-                feats.append(feat_name)
+                feats.append(feat_path)
                 feat_nframes.append(length)
-                name2idx[feat_name] = len(feats) - 1
+                if feat_name not in name2idx:
+                    name2idx[feat_name] = len(feats) - 1
+                else:
+                    raise Exception("An error occur while reading SCP file(%s), code:%d, duplicate input name: %s" % (file_name, 2, feat_name))
 
         return (feats, name2idx, feat_nframes)
 
@@ -190,13 +193,15 @@ class HTKDataset(object):
                     if (line=="#!MLF!#"):
                         start_mlf = True
                         lab_complete = True
+                        lab_name = ''
+                        continue
                     else:
                         """ raise FileFormatError """
                         raise Exception("  An error occur while reading MLF file(%s), code:%d, File Format Error: no #!MLF!# found" % (file_name, 2))
                         return ({}, 0, 0)
                 if (re.match('^\"[\.a-zA-Z0-9-_]+\.lab\"$', line)):   #label Name
                     if (not lab_complete):
-                        raise Exception("  An error occur while reading MLF file(%s), code:%d, File Format Error, incomplete label" % (file_name, 2))
+                        raise Exception("  An error occur while reading MLF file(%s), code:%d, File Format Error, incomplete label %s" % (file_name, 2, lab_name))
                         return ({}, 0, 0)
                     lab_length = 0
                     lab_complete = False
@@ -207,16 +212,17 @@ class HTKDataset(object):
                     lst = line.split(' ')
                     start_pos  = int(lst[0]) // 100000
                     end_pos    = int(lst[1]) // 100000
-                    lab_length = end_position
                     label_item = int(lst[2])
                     if (start_pos != lab_length):
                         """ raise FileFormatError """
-                        raise Exception("An error occur while reading SCP file(%s), code:%d, File Format Error: missing labels" % (file_name, 2))
+                        raise Exception("An error occur while reading SCP file(%s), code:%d, File Format Error: missing labels for %s" % (file_name, 2, lab_name))
                         return ({}, 0, 0)
+
+                    lab_length = end_pos
                     for i in range(start_pos, end_pos):
-                        labels[-1].append(label)
+                        labels[-1].append(label_item)
                 elif (re.match('^\.$', line)):      # End of current label
-                    label_complete = True
+                    lab_complete = True
                     if (self.max_utt_len > 0 and delete_toolong):   # delete the label if it exceed the maximum length
                         del name2idx[lab_name]
                         del labels[-1]
@@ -226,7 +232,7 @@ class HTKDataset(object):
                     raise Exception("An error occur while reading SCP file(%s), code:%d, File Format Error: unknown format: %s" % (file_name, 2, line))
                     return ({}, 0, 0)
 
-        if not label_complete:
+        if not lab_complete:
             """ raise FileFormatError """
             raise Exception("  An error occur while reading MLF file(%s), code:%d, File Format Error, incomplete label" % (file_name, 2))
             return ({}, 0, 0)
