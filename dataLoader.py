@@ -70,10 +70,10 @@ class HTKDataset(object):
         config_parms = [input_config_parms, target_config_parms]
 
         for data_idx in range(len(data)):     # loop of 2, input or target
-            cur_data         = data[attr_idx]
+            cur_data         = data[data_idx]
             cur_config_parms = config_parms[data_idx]
-            cur_attributes   = attributes[attr_idx]
-            data_cnt         = getattr(self, "n{0}s".format(data_prefix[attr_idx])) # ninputs/ntargets
+            cur_attributes   = attributes[data_idx]
+            data_cnt         = getattr(self, "n{0}s".format(data_prefix[data_idx])) # ninputs/ntargets
             
             """ initialize to None """
             for i in range(data_cnt):
