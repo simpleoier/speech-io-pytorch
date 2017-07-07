@@ -156,7 +156,7 @@ class HTKDataset(object):
                 comma_pos = res_info.find(',')
                 start_frame = int(res_info[:comma_pos])
                 end_frame   = int(res_info[comma_pos+1:-1])
-                length = end_position - start_position + 1
+                length = end_pos - start_pos + 1
                 if (max_utt_len != None and length > max_utt_len): continue     # Omit the utterances that exceed the maximum length limit
 
                 feats.append(feat_name)
