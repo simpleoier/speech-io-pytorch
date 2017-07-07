@@ -91,7 +91,7 @@ class HTKDataset(object):
                     (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['nframes'], cur_data[i]['label_mapping'], cur_data[i]['nUtts']) = self.read_MLF(file_name, cur_config_parms[i])
                 elif cur_data[i]['data_type'] == "SCP":
                     cur_data[i]['context_window'] = cur_config_parms[i]['context_window'] if 'context_window' in cur_config_parms[i] else (0, 0)
-                    (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['nframes'], cur_data[i]['nUtts']) = self.read_SCP(file_name, cur_config_parms[i])
+                    (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['nframes'], cur_data[i]['nUtts']) = self.read_SCP(file_name)
 
         """ convert list to the first item, when list is not needed """
         for i in range(len(data)):
