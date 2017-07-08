@@ -33,7 +33,7 @@ def HTK_open(f, mode=None, veclen=13, **kargs):
         The mode parameter is 'rb' (reading) or 'wb' (writing).
     """
     if not (os.path.exists(f)):
-        raise Exception("File %s dies not exist!" % f)
+        raise Exception("File %s does not exist!" % f)
     if mode is None:
         if hasattr(f, 'mode'):
             mode = f.mode

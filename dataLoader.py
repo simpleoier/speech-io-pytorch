@@ -66,7 +66,6 @@ class HTKDataset(object):
         """ For loop convenience """
         data         = [self.inputs, self.targets]
         data_prefix  = ["input", "target"]
-        list_in      = [input_list_in, target_list_in]
         config_parms = [input_config_parms, target_config_parms]
 
         for data_idx in range(len(data)):     # loop of 2, input or target
@@ -106,11 +105,11 @@ class HTKDataset(object):
               config_parms(dictionary)
         """
         (labels, name2idx, lab_nframes) = self.read_HTK_MLF(file_name)
-        if 'context_window' in config_parms:
+        if 'label_mapping' in config_parms:
             label_mapping_path = config_parms['label_mapping']
             (label_mapping, _) = self.read_label_mapping(label_mapping_path)
         else:
-            label_mapping = []
+            label_mapping = None
         return (labels, name2idx, lab_nframes, label_mapping, len(labels))
 
 
