@@ -25,38 +25,46 @@ for i in range(len(feat_config_parms)):
         print(value.shape)
     print(data.label_label_mapping[i])
 '''
-for i in range(len(feat_config_parms)):
-    print(type(feat_config_parms[i]))
-    data = HTKDataset(feat_config_parms[i], label_config_parms[i])
-    print(data.inputs['nUtts'], data.inputs['nframes'])
-    print(data.targets['nUtts'], data.targets['nframes'])
-    print(data.inputs['data'])
-    print(data.targets['data'])
-    if data.targets['data'] is None: continue
-    for (key,value) in data.targets['name2idx'].items():
-        print(key,value)
-    print(data.targets['label_mapping'])
+def test_single_config():
+    for i in range(len(feat_config_parms)):
+        print(type(feat_config_parms[i]))
+        data = HTKDataset(feat_config_parms[i], label_config_parms[i])
+        print(data.inputs[0]['nUtts'], data.inputs[0]['nframes'])
+        print(data.targets[0]['nUtts'], data.targets[0]['nframes'])
+        print(data.inputs[0]['data'])
+        print(data.targets[0]['data'])
+        if data.targets[0]['data'] is None: continue
+        for (key,value) in data.targets[0]['name2idx'].items():
+            print(key,value)
+        print(data.targets[0]['label_mapping'])
 
-print(type(feat_config_parms))
-data = HTKDataset(feat_config_parms, label_config_parms)
-print(data.inputs[0]['nUtts'], data.inputs[0]['nframes'])
-print(data.targets[0]['nUtts'], data.targets[0]['nframes'])
-print(data.inputs[0]['data'])
-print(data.targets[0]['data'])
-for (key,value) in data.targets[0]['name2idx'].items():
-    print(key,value)
-print(data.targets[0]['label_mapping'])
+def test_list_config():
+    print(type(feat_config_parms))
+    data = HTKDataset(feat_config_parms, label_config_parms)
+    print(data.inputs[0]['nUtts'], data.inputs[0]['nframes'])
+    print(data.targets[0]['nUtts'], data.targets[0]['nframes'])
+    print(data.inputs[0]['data'])
+    print(data.targets[0]['data'])
+    for (key,value) in data.targets[0]['name2idx'].items():
+        print(key,value)
+    print(data.targets[0]['label_mapping'])
+
+test_list_config()
 
 finish = clock()
 print((finish - start) / 1000000)
 """
  Test HTK_IO
 """
-from HTK_IO import HTK_open, FBANK, _O
+from HTK_IO import HTKFeat_read, HTKFeat_write, FBANK, _O
 
-read_file_path = "/slfs1/users/xkc09/asr/PIT/data/mixspeech/ami/data-fbank40/train_10/features_40dim/AMI_EN2001a_H00_MEE068_0000557_0000594_10_AMI_TS3006d_H01_MTD023UID_0158383_0158414.fbank"
-htk_reader = HTK_open(read_file_path,'rb')
-data = htk_reader.getall()
-write_file_path = "../test_data/test_write_htk"
-htk_writer = HTK_open(write_file_path, 'wb', veclen=40, paramKind = (FBANK | _O))
-htk_writer.writeall(data)
+def test_HTK_IO():
+    read_file_path = "/home/xkc09/Documents/xkc09/program/kaldi-io/test_data/AMI_EN2001a_H00_MEE068_0000557_0000594_10_AMI_TS3006d_H01_MTD023UID_0158383_0158414.fbank[0,34]"
+    htk_reader = HTKFeat_read(read_file_path)
+    data = htk_reader.getsegment(10, 34)
+    print(data)
+    write_file_path = "../test_data/test_write_htk"
+    htk_writer = HTKFeat_write(write_file_path, veclen=40, paramKind = (FBANK | _O))
+    htk_writer.writeall(data)
+
+test_HTK_IO()

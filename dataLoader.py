@@ -37,6 +37,7 @@ class HTKDataset(object):
                 :type:      string, from CNTK, only for target, "category"
                 :data:      feature path or label
                 :nUtts:     int, number of utterances
+                :start_f:   int list, the start frame point in the feature file
                 :nframes:   int list, number of frames for each utt
                 :context_window: tuple, context window size
                 :label_mapping: label_mapping, from int to label
@@ -60,7 +61,7 @@ class HTKDataset(object):
         self.max_utt_len = max_utt_len
 
         """ Define all possible attributes for data and labels """
-        base_attributes  = ['dim', 'data_type', 'type', 'data', 'nUtts', 'nframes',
+        base_attributes  = ['dim', 'data_type', 'type', 'data', 'nUtts', 'start_f', 'nframes',
                             'context_window', 'label_mapping', 'name2idx', 'total_nframes']
         nattributes = len(base_attributes)
 
@@ -91,7 +92,7 @@ class HTKDataset(object):
                     (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['nframes'], cur_data[i]['label_mapping'], cur_data[i]['nUtts'], cur_data[i]['total_nframes']) = self.read_MLF(file_name, cur_config_parms[i])
                 elif cur_data[i]['data_type'] == "SCP":
                     cur_data[i]['context_window'] = cur_config_parms[i]['context_window'] if 'context_window' in cur_config_parms[i] else (0, 0)
-                    (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['nframes'], cur_data[i]['nUtts'], cur_data[i]['total_nframes']) = self.read_SCP(file_name)
+                    (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['start_f'], cur_data[i]['nframes'], cur_data[i]['nUtts'], cur_data[i]['total_nframes']) = self.read_SCP(file_name)
 
         """ convert list to the first item, when list is not needed """
         #if not input_list_in:
@@ -105,7 +106,7 @@ class HTKDataset(object):
               file_name(string),
               config_parms(dictionary)
         """
-        (labels, name2idx, lab_nframes, total) = self.read_HTK_MLF(file_name)
+        (labels, name2idx, lab_nframes) = self.read_HTK_MLF(file_name)
         if 'label_mapping' in config_parms:
             label_mapping_path = config_parms['label_mapping']
             (label_mapping, _) = self.read_label_mapping(label_mapping_path)
@@ -121,10 +122,10 @@ class HTKDataset(object):
               file_name(string),
               config_parms(dictionary)
         """
-        (feats, name2idx, feat_nframes) = self.read_HTK_feats_SCP(file_name)
+        (feats, name2idx, feat_start_f, feat_nframes) = self.read_HTK_feats_SCP(file_name)
         total_nframes = 0
         for i in range(len(feat_nframes)): total_nframes += feat_nframes[i]
-        return (feats, name2idx, feat_nframes, len(feats), total_nframes)
+        return (feats, name2idx, feat_start_f, feat_nframes, len(feats), total_nframes)
 
 
     def read_HTK_feats_SCP(self, file_name=None, max_utt_len=None):
@@ -140,6 +141,7 @@ class HTKDataset(object):
 
         feats = []
         name2idx = {}
+        feat_start_f = []
         feat_nframes = []
 
         with open(file_name, 'r') as file:
@@ -164,13 +166,14 @@ class HTKDataset(object):
                 if (max_utt_len != None and length > max_utt_len): continue     # Omit the utterances that exceed the maximum length limit
 
                 feats.append(feat_path)
+                feat_start_f.append(start_frame)
                 feat_nframes.append(length)
                 if feat_name not in name2idx:
                     name2idx[feat_name] = len(feats) - 1
                 else:
                     raise Exception("An error occur while reading SCP file(%s), code:%d, duplicate input name: %s" % (file_name, 2, feat_name))
 
-        return (feats, name2idx, feat_nframes)
+        return (feats, name2idx, feat_start_f, feat_nframes)
 
 
     def read_HTK_MLF(self, file_name=None, delete_toolong=True):
@@ -367,6 +370,7 @@ class HTKDataLoaderIter(object):
 
     def _next_epoch(self):
         if self.epoch_samples_remaining < self.random_samples_remaining:
+            pass
 
     def _next_random_block(self):
         while True:
