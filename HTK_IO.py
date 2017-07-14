@@ -50,6 +50,14 @@ class HTKFeat_read(object):
     """ Read HTK format feature files. """
     def __init__(self, file_name=None):
         self.swap = (unpack('=i', pack('>i', 42))[0] != 42)
+        if (re.match('^[\w\_\.]+\[\d+,\d+\]$', file_name)):
+            file_name = file_name[:-1]
+            lst = file_name.split('[')
+            file_name = lst[0]
+            rest_info = lst[1]
+            start_f, end_f = rest_info.split(',')
+            self.start_f = int(start_f)
+            self.end_f = int(end_f)
         if (file_name != None):
             self.open(file_name)
 
@@ -61,6 +69,12 @@ class HTKFeat_read(object):
         self.file_name = file_name
         self.fh = open(file_name, 'rb')
         self.readheader()
+
+    def __del__(self):
+        self.close()
+
+    def close(self):
+        self.fh.close()
 
     def readheader(self):
         self.fh.seek(0, 0)  # move the file pointer to the 0 byte
@@ -101,6 +115,15 @@ class HTKFeat_read(object):
     def readvec(self):
         return self.next()
 
+    def getsegment(self):
+        if not (self.start_f is None):
+            self.seek(self.start_f)
+        else:
+            self.seek(0)
+        data = np.zeros((self.end_f - self.start_f + 1, self.veclen), self.dtype)
+        for i in range(self.end_f - self.start_f + 1):
+            data[i] = self.next()
+
     def getall(self):
         self.seek(0)
         data = np.fromfile(self.fh, self.dtype)
@@ -137,6 +160,7 @@ class HTKFeat_write(object):
 
     def close(self):
         self.writeheader()
+        self.fh.close()
 
     def writeheader(self):
         self.fh.seek(0, 0)

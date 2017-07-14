@@ -11,6 +11,7 @@ import sys
 import re
 import os
 import numpy as np
+from HTK_IO import HTK_open
 
 class HTKDataset(object):
     """
@@ -60,7 +61,7 @@ class HTKDataset(object):
 
         """ Define all possible attributes for data and labels """
         base_attributes  = ['dim', 'data_type', 'type', 'data', 'nUtts', 'nframes',
-                            'context_window', 'label_mapping', 'name2idx']
+                            'context_window', 'label_mapping', 'name2idx', 'total_nframes']
         nattributes = len(base_attributes)
 
         """ For loop convenience """
@@ -87,16 +88,16 @@ class HTKDataset(object):
 
                 if cur_data[i]['data_type'] == "MLF":
                     cur_data[i]['type'] = cur_config_parms[i]['label_type']
-                    (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['nframes'], cur_data[i]['label_mapping'], cur_data[i]['nUtts']) = self.read_MLF(file_name, cur_config_parms[i])
+                    (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['nframes'], cur_data[i]['label_mapping'], cur_data[i]['nUtts'], cur_data[i]['total_nframes']) = self.read_MLF(file_name, cur_config_parms[i])
                 elif cur_data[i]['data_type'] == "SCP":
                     cur_data[i]['context_window'] = cur_config_parms[i]['context_window'] if 'context_window' in cur_config_parms[i] else (0, 0)
-                    (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['nframes'], cur_data[i]['nUtts']) = self.read_SCP(file_name)
+                    (cur_data[i]['data'], cur_data[i]['name2idx'], cur_data[i]['nframes'], cur_data[i]['nUtts'], cur_data[i]['total_nframes']) = self.read_SCP(file_name)
 
         """ convert list to the first item, when list is not needed """
-        if not input_list_in:
-            self.inputs = self.inputs[0]
-        if not target_list_in:
-            self.targets = self.targets[0]
+        #if not input_list_in:
+        #    self.inputs = self.inputs[0]
+        #if not target_list_in:
+        #    self.targets = self.targets[0]
 
 
     def read_MLF(self, file_name, config_parms):
@@ -104,13 +105,15 @@ class HTKDataset(object):
               file_name(string),
               config_parms(dictionary)
         """
-        (labels, name2idx, lab_nframes) = self.read_HTK_MLF(file_name)
+        (labels, name2idx, lab_nframes, total) = self.read_HTK_MLF(file_name)
         if 'label_mapping' in config_parms:
             label_mapping_path = config_parms['label_mapping']
             (label_mapping, _) = self.read_label_mapping(label_mapping_path)
         else:
             label_mapping = None
-        return (labels, name2idx, lab_nframes, label_mapping, len(labels))
+        total_nframes = 0
+        for i in range(len(lab_nframes)): total_nframes += lab_nframes[i]
+        return (labels, name2idx, lab_nframes, label_mapping, len(labels), total_nframes)
 
 
     def read_SCP(self, file_name):
@@ -119,7 +122,9 @@ class HTKDataset(object):
               config_parms(dictionary)
         """
         (feats, name2idx, feat_nframes) = self.read_HTK_feats_SCP(file_name)
-        return (feats, name2idx, feat_nframes, len(feats))
+        total_nframes = 0
+        for i in range(len(feat_nframes)): total_nframes += feat_nframes[i]
+        return (feats, name2idx, feat_nframes, len(feats), total_nframes)
 
 
     def read_HTK_feats_SCP(self, file_name=None, max_utt_len=None):
@@ -276,6 +281,10 @@ class HTKDataLoaderIter(object):
     def __init__(self, loader):
         self.dataset = loader.dataset
         self.batch_size = loader.batch_size
+        self.frame_mode = loader.frame_mode
+        self.random_size = min(loader.random_size, self.dataset.input[0]['total_nframes'])
+        self.epoch_size = min(loader.epoch_size, self.dataset.input[0]['total_nframes'])
+        self.truncate_size = loader.truncate_size
         self.collate_fn = loader.collate_fn
         self.sampler = loader.sampler
         self.num_workers = loader.num_workers
@@ -283,9 +292,120 @@ class HTKDataLoaderIter(object):
         self.drop_last = loader.drop_last
         self.done_event = threading.Event()
 
-        self.samples_remaining = len(self.sampler)
+        self.epoch_samples_remaining = 0
+        self.random_samples_remaining = 0
         self.sample_iter = iter(self.sampler)
-        self.cur_mb_index = loader
+
+        self.random_utt_idx = 0
+
+        self.standard_keys = loader.dataset.input[0]['name2idx'].keys()
+        self.keys_random_block = []
+        """
+        if self.num_workers > 0:
+            self.index_queue = multiprocessing.SimpleQueue()
+            self.data_queue = multiprocessing.SimpleQueue()
+            self.batches_outstanding = 0
+            self.shutdown = False
+            self.send_idx = 0
+            self.rcvd_idx = 0
+            self.reorder_dict = {}
+
+            self.workders = [
+                multiprocessing.Process(
+                    target=_worker_loop,
+                    args=(self.dataset, self.index_queue, self.data_queue, self.collate_fn)
+                ) for _ in range(self.num_workers)]
+
+            for w in self.workers:
+                w.daemon = True     # ensure that the worker exists on process exit
+                w.start()
+
+            if self.pin_memory:
+                in_data = self.data_queue
+                self.data_queue = queue.Queue()
+                self.pin_thread = threading.Thread(
+                    target = _pin_memory_loop,
+                    args=(in_data, self.data_queue, self.done_event))
+                self.pin_thread.daemon = True
+                self.pin_thread.start()
+
+            # prime the prefetch loop
+            for _ in range(2 * self.num_workers):
+                self._put_indices()
+        """
+
+    def __len__(self):
+        if self.drop_last:
+            return len(self.sampler) // self.batch_size
+        else:
+            return (len(self.sampler) + self.batch_size - 1) // self.batch_size
+
+    def __next__(self):
+        if self.num_workers == 0:   # same_process loading
+            if self.drop_last and self.epoch_samples_remaining < self.batch_size:
+                raise StopIteration
+            if self.epoch_samples_remaining == 0:
+                raise StopIteration
+            indices = self._next_batch_indices()
+            batch = self.collate_fn([self.dataset[i] for i in indices])
+            if self.pin_memory:
+                batch = pin_memory_batch(batch)
+        return batch
+
+    next = __next__     # Python 2 compatibility
+
+    def __iter__(self):
+        # TODO: Next Epoch
+        self._next_epoch()
+        return self
+
+    def _next_batch_indices(self):
+        batch_size = min(self.epoch_samples_remaining, self.batch_size)
+        batch = [next(self.sample_iter) for _ in range(batch_size)]
+        self.epoch_samples_remaining -= len(batch)
+        return batch
+
+    def _next_epoch(self):
+        if self.epoch_samples_remaining < self.random_samples_remaining:
+
+    def _next_random_block(self):
+        while True:
+            key = self.standard_keys[self.random_utt_idx]
+            key2idx0 = self.dataset.input[0]['name2idx'][key]
+            if (self.random_samples_remaining + self.dataset.input[0]['nframes'][key2idx0]) < self.random_size:
+                self.keys_random_block.append(key)
+                self.random_utt_idx = (self.random_utt_idx + 1) % self.dataset.input[0]['nUtts']
+                self.random_samples_remaining += self.dataset.input[0]['nframes'][key2idx0]
+            else:
+                break
+        # Read HTK Data of keys list
+        self._read_data_tensors()
+
+    def _read_data_tensors():
+        for i in range(len(self.keys_random_block)):
+            htk_reader = HTK_IO.HTKFeat_read(self.keys_random_block[i])
+            data = htk_reader.getall()
+            htk_reader.close()
+
+    """
+    def _put_indices(self):
+        assert self.batches_outstanding < 2 * self.num_workers
+        if self.samples_remaining > 0:
+            if self.samples_remaining < self.batch_size and self.drop_last:
+                self._next_indices()
+            else:
+                self.index_queue.put((self.send_idx, self._next_indices()))
+                self.batches_outstanding += 1
+                self.send_idx += 1
+    """
+
+    def __getstate__(self):
+        # TODO: add limited pickling support for sharing an iterator
+        # across multiple threads for HOGWILD.
+        # Probably the best way to do this is by moving the sample pushing
+        # to a separate thread and then just sharing the data queue
+        # but signalling the end is tricky without a non-blocking API
+        raise NotImplementedError("DataLoaderIterator cannot be pickled")
 
 
 class HTKDataLoader(DataLoader):
@@ -296,10 +416,6 @@ class HTKDataLoader(DataLoader):
          dataset (Dataset): dataset from which to load the data.
          batch_size (int, optional): how many samples per batch to load
              (default: 1).
-         shuffle (bool, optional): set to ``True`` to have the data reshuffled
-             at every epoch (default: False).
-         sampler (Sampler, optional): defines the strategy to draw samples from
-             the dataset. If specified, the ``shuffle`` argument is ignored.
          num_workers (int, optional): how many subprocesses to use for data
              loading. 0 means that the data will be loaded in the main process
              (default: 0)
@@ -312,31 +428,27 @@ class HTKDataLoader(DataLoader):
          frame_mode(bool, optional): set to ``False`` to enable (utterance) sequence
          random_size(int, optional): defines the number of frames to load for once
          epoch_size(int, optional): defines the number of frames for each epoch
+         truncate_size(int, optional): defines the truncate length in RNN
     """
-    def __init__(self, dataset, batch_size=1, shuffle=False, sampler=None, num_workers=0,
+    def __init__(self, dataset, batch_size=1, num_workers=0,
                  collate_fn=default_collate, pin_memory=False, drop_last=False,
-                 frame_mode=False, random_size=None, epoch_size=0):
+                 frame_mode=False, random_size=None, epoch_size=0, truncate_size=0):
         self.dataset = dataset
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.collate_fn = collate_fn
         self.pin_memory = pin_memory
-        self.drop_last = drop_last
+        self.drop_last  = drop_last
 
-        self.epoch_size = epoch_size
-        self.frame_mode = frame_mode
+        self.frame_mode  = frame_mode
         self.random_size = random_size
+        self.epoch_size  = epoch_size
+        self.truncate_size = truncate_size
 
-        self.feat_epoch = []     # [epoch, input_cnt]={}
-        self.label_epoch = []     # [epoch, input_cnt]={}
-        self.SplitEpoch()
-
-        if sampler is not None:
-            self.sampler = sampler
-        elif shuffle:
-            self.sampler = torch_data.RandomSampler(dataset)
-        elif not shuffle:
-            self.sampler = torch_data.SequentialSampler(dataset)
+        if self.frame_mode:
+            self.sampler = frame_lev_sampler
+        else:
+            self.sampler = utterance_lev_sampler
 
 
     def __iter__(self):
@@ -349,5 +461,3 @@ class HTKDataLoader(DataLoader):
         else:
             return (len(self.sampler) + self.batch_size - 1) // self.batch_size
 
-    def SplitEpoch(self):
-        pass
