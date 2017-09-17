@@ -117,7 +117,7 @@ class HTKFeat_read(object):
         return self.next()
 
     def getsegment(self, start_f, end_f):
-        self.seek(self.start_f)
+        self.seek(start_f)
         data = np.zeros((end_f - start_f + 1, self.veclen), self.dtype)
         for i in range(end_f - start_f + 1):
             data[i] = self.next()
