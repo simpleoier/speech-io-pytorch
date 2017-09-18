@@ -73,6 +73,8 @@ class HTKDataset(object):
         self._get_all_data(self.inputs,  input_config_parms)
         self._get_all_data(self.targets, target_config_parms)
 
+        print("HTKDataset initialization close.")
+
 
     def _get_all_data(self, data, config_parms):
         """ Read inputs and targets."""
@@ -120,7 +122,6 @@ class HTKDataset(object):
     def _read_SCP(self, file_name, data):
         """ Function for SCP data type.
               file_name(string),
-              config_parms(dictionary)
               data(dictionary)
         """
         (feats, name2idx, feat_start_f, feat_nframes) = self._read_HTK_feats_SCP(file_name)
@@ -171,7 +172,7 @@ class HTKDataset(object):
                 length = end_frame - start_frame + 1
                 if (self.max_utt_len != 0 and length > self.max_utt_len):     # Omit the utterances that exceed the maximum length limit
                     if self.first_input:
-                        print("minibatchutterancesource: skipping %d-th file (%d frames) because it exceeds maxUtteranceLength (%d frames)" % (linecnt, length, self.max_utt_len) )
+                        print("\tminibatchutterancesource: skipping %d-th file (%d frames) because it exceeds maxUtteranceLength (%d frames)" % (linecnt, length, self.max_utt_len) )
                     continue
                 if (length > self.max_utt_len2): self.max_utt_len2 = length
 
@@ -193,7 +194,8 @@ class HTKDataset(object):
          :delete_toolong: delete the utterance that exceeds the maximum utterance length
         """
         if (file_name == None or not os.path.exists(file_name)):
-            raise Exception("An error occur while reading MLF file(%s), code:%d, File Non-exists" % (file_name, 1))
+            message = "An error occur while reading MLF file({0}), code:{1}, File Non-exists".format(file_name, 1)
+            raise Exception(message)
 
         labels = []
         name2idx = {}

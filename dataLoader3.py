@@ -89,13 +89,22 @@ numpy_type_map = {
 
 def convert_utts_list_tensor(data, tensor):
     "Convert data[batch_size][uttLen][dim] to a tensor."
-    uttsLength = [len(utt) for utt in data]
+    if type(data[0]).__module__ == np.__name__: # numpy ndarray list
+        uttsLength = [utt.shape[0] for utt in data]
+        dim = data[0].shape[1] if len(data[0].shape) == 2 else 1
+    else:   # norm list of python default type
+        uttsLength = [len(utt) for utt in data]
+        dim = len(data[0][0]) if type(data[0][0]) == list else 1
+
     maxLen = max(uttsLength)
-    dim = len(data[0][0]) if type(data[0][0]) == list else 1
     dataTensor = tensor(len(data), maxLen, dim).zero_()
     dataTensor.squeeze_(dataTensor.dim()-1)
+
     for utt in range(len(data)):
-        dataTensor[utt][0:uttsLength].copy_(tensor(data[utt]))
+        if type(data[0]).__module__ == np.__name__: # numpy ndarray list
+            dataTensor[utt][0:uttsLength[utt]].copy_(torch.from_numpy(data[utt]))
+        else:
+            dataTensor[utt][0:uttsLength[utt]].copy_(tensor(data[utt]))
     return dataTensor
 
 
@@ -195,7 +204,7 @@ class HTKDataLoaderIter(object):
         self.random_samples_remaining = 0
         self.random_utts_remaining = 0
 
-        self.random_utt_idx = 0
+        self.random_utt_idx = loader.random_utt_idx
         self.max_utt_len = self.dataset.max_utt_len2
 
         self.all_keys = list(loader.dataset.inputs[0]['name2idx'])
@@ -250,6 +259,23 @@ class HTKDataLoaderIter(object):
         else:
             return (data_cnt + self.batch_size - 1) // self.batch_size
 
+
+    def _get_default_tensor(self, data):
+        tmp_data = data
+        while (True):
+            if type(tmp_data)==list:
+                tmp_data = tmp_data[0]
+                continue
+            elif type(tmp_data).__module__ == np.__name__:
+                return numpy_type_map[str(tmp_data.dtype)]
+            elif isinstance(tmp_data, int):
+                return torch.IntTensor
+            elif isinstance(tmp_data, float):
+                return torch.FloatTensor
+            else:
+                raise Exception("DataLoaderIter only support numpy, int and float type.")
+
+
     def __next__(self):
         if self.num_workers == 0:   # same_process loading
             if self.drop_last and self.epoch_samples_remaining < self.batch_size:
@@ -268,28 +294,16 @@ class HTKDataLoaderIter(object):
                 if batch[i] is None: continue
 
                 for j in range(len(self.block_data[i])):
-                    tmp_batch = []
-                    for k in indices:
-                        tmp_batch.append(self.block_data[i][j][k])
-
-                    #batch[i].append(self.collate_fn(tmp_batch, self.frame_mode))
-                    tmp_batch1 = tmp_batch
-                    while (True):
-                        if type(tmp_batch1)==list:
-                            tmp_batch1 = tmp_batch1[0]
-                            continue
-                        elif isinstance(tmp_batch1, int):
-                            defaultTensor = torch.LongTensor
-                            break
-                        elif isinstance(tmp_batch1, float):
-                            defaultTensor = torch.DoubleTensor
-                            break
-                        else:
-                            raise Exception("DataLoaderIter only support int and float type.")
-
                     if self.frame_mode:
-                        batch[i].append(defaultTensor(tmp_batch))
+                        tmp_batch = self.block_data[i][j][indices]
+                        batch[i].append(torch.from_numpy(tmp_batch))
                     else:
+                        tmp_batch = []
+                        for k in indices:
+                            tmp_batch.append(self.block_data[i][j][k])
+
+                        #batch[i].append(self.collate_fn(tmp_batch, self.frame_mode))
+                        defaultTensor = self._get_default_tensor(tmp_batch)
                         batch[i].append(convert_utts_list_tensor(tmp_batch, defaultTensor))
 
             if self.pin_memory:
@@ -333,7 +347,9 @@ class HTKDataLoaderIter(object):
             else:
                 break
         data_cnt = self.random_samples_remaining if self.frame_mode else len(self.random_block_keys)
-        self.random_utts_remaining = None if self.frame_mode else data_cnt
+        self.random_utts_remaining = None if self.frame_mode else data_cnt      
+        #self.perm_indices = iter(torch.randperm(data_cnt).long()) if data_cnt > 0 else None
+        self.perm_indices = iter(np.random.permutation(data_cnt))
 
         # Read HTK Data of keys list
         data = [self.dataset.inputs, self.dataset.targets]
@@ -350,8 +366,6 @@ class HTKDataLoaderIter(object):
                     tmp_block_data = self._get_MLF_block(data[i][j])
                 block_data[i].append(tmp_block_data)
 
-        #self.perm_indices = iter(torch.randperm(data_cnt).long()) if data_cnt > 0 else None
-        self.perm_indices = iter(torch.randperm(data_cnt).long())
         return block_data
 
 
@@ -374,12 +388,9 @@ class HTKDataLoaderIter(object):
                 raise Exception("Dimension does not match, %d in configure vs. %d in data" % (dimension, tmp_data.shape[1]))
             htk_reader.close()
 
-            tmp_data = tmp_data.tolist()
-
+            random_block_data.append(tmp_data)
             if self.frame_mode:
-                random_block_data += tmp_data
-            else:
-                random_block_data.append(tmp_data)
+                random_block_data = np.concatenate(tmp_data, axis=0)
         return random_block_data
 
 
@@ -445,7 +456,7 @@ class HTKDataLoader(DataLoader):
     """
     def __init__(self, dataset, batch_size=1, num_workers=0,
                  collate_fn=default_collate, pin_memory=False, drop_last=False,
-                 frame_mode=False, random_size=None, epoch_size=None, truncate_size=0):
+                 frame_mode=False, random_size=None, epoch_size=None, truncate_size=0, random_utt_idx=0):
         self.dataset = dataset
         self.num_workers = num_workers
         self.collate_fn = collate_fn
@@ -457,6 +468,8 @@ class HTKDataLoader(DataLoader):
         self.random_size = random_size if random_size else self.dataset.inputs[0]['total_nframes']
         self.epoch_size  = epoch_size if epoch_size else self.random_size
         self.truncate_size = truncate_size
+        self.random_utt_idx = random_utt_idx
+        
         print('HTKDataLoader initialization close.')
 
 
