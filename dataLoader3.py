@@ -87,13 +87,11 @@ numpy_type_map = {
 }
 
 
-def convert_utts_list_tensor(data, tensor):
+def convert_utts_list_tensor(data, tensor, uttsLength):
     "Convert data[batch_size][uttLen][dim] to a tensor."
     if type(data[0]).__module__ == np.__name__: # numpy ndarray list
-        uttsLength = [utt.shape[0] for utt in data]
         dim = data[0].shape[1] if len(data[0].shape) == 2 else 1
     else:   # norm list of python default type
-        uttsLength = [len(utt) for utt in data]
         dim = len(data[0][0]) if type(data[0][0]) == list else 1
 
     maxLen = max(uttsLength)
@@ -159,10 +157,6 @@ def default_collate(batch, frame_mode):
             if elem.shape == ():  # scalars
                 py_type = float if elem.dtype.name.startswith('float') else int
                 return numpy_type_map[elem.dtype.name](list(map(py_type, batch)))
-        elif isinstance(batch[0][0][0], int):
-            return convert_utts_list_tensor(batch, torch.LongTensor)
-        elif isinstance(batch[0][0][0], float):
-            return convert_utts_list_tensor(batch, torch.DoubleTensor)
         elif isinstance(batch[0][0][0], string_classes):
             return batch
 
@@ -287,6 +281,7 @@ class HTKDataLoaderIter(object):
                 self.block_data = self._next_random_block()
 
             indices, lengths = self._next_batch_indices()
+            sorted_lengths, order = torch.sort(torch.IntTensor(lengths), 0, descending=True)
             inputs = [] if self.block_data[0] else None
             targets = [] if self.block_data[1] else None
             batch = [inputs, targets]
@@ -304,11 +299,11 @@ class HTKDataLoaderIter(object):
 
                         #batch[i].append(self.collate_fn(tmp_batch, self.frame_mode))
                         defaultTensor = self._get_default_tensor(tmp_batch)
-                        batch[i].append(convert_utts_list_tensor(tmp_batch, defaultTensor))
+                        batch[i].append(convert_utts_list_tensor(tmp_batch, defaultTensor, lengths)[order])
 
             if self.pin_memory:
                 batch = pin_memory_batch(batch)
-        return batch, lengths
+        return batch, list(sorted_lengths)
 
     next = __next__     # Python 2 compatibility
 
@@ -469,7 +464,7 @@ class HTKDataLoader(DataLoader):
         self.epoch_size  = epoch_size if epoch_size else self.random_size
         self.truncate_size = truncate_size
         self.random_utt_idx = random_utt_idx
-        
+
         print('HTKDataLoader initialization close.')
 
 
