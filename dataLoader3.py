@@ -193,10 +193,12 @@ class HTKDataLoaderIter(object):
         self.pin_memory = loader.pin_memory
         self.drop_last = loader.drop_last
         self.done_event = threading.Event()
+        self.random_seed = loader.random_seed
 
         self.epoch_samples_remaining = self.epoch_size
         self.random_samples_remaining = 0
         self.random_utts_remaining = 0
+        np.random.seed(self.random_seed)
 
         self.random_utt_idx = loader.random_utt_idx
         self.max_utt_len = self.dataset.max_utt_len2
@@ -342,7 +344,7 @@ class HTKDataLoaderIter(object):
             else:
                 break
         data_cnt = self.random_samples_remaining if self.frame_mode else len(self.random_block_keys)
-        self.random_utts_remaining = None if self.frame_mode else data_cnt      
+        self.random_utts_remaining = None if self.frame_mode else data_cnt
         #self.perm_indices = iter(torch.randperm(data_cnt).long()) if data_cnt > 0 else None
         self.perm_indices = iter(np.random.permutation(data_cnt))
 
@@ -451,7 +453,7 @@ class HTKDataLoader(DataLoader):
     """
     def __init__(self, dataset, batch_size=1, num_workers=0,
                  collate_fn=default_collate, pin_memory=False, drop_last=False,
-                 frame_mode=False, random_size=None, epoch_size=None, truncate_size=0, random_utt_idx=0):
+                 frame_mode=False, random_size=None, epoch_size=None, truncate_size=0, random_utt_idx=0, random_seed=19931225):
         self.dataset = dataset
         self.num_workers = num_workers
         self.collate_fn = collate_fn
@@ -464,6 +466,7 @@ class HTKDataLoader(DataLoader):
         self.epoch_size  = epoch_size if epoch_size else self.random_size
         self.truncate_size = truncate_size
         self.random_utt_idx = random_utt_idx
+        self.random_seed = random_seed
 
         print('HTKDataLoader initialization close.')
 
