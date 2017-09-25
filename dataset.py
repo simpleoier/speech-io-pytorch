@@ -98,6 +98,8 @@ class HTKDataset(object):
                 self._read_SCP(file_name, data[i])
             self.first_input = False
 
+            print("\tDataset %d: %d frames in %d utterances" % (i, data[i]['total_nframes'], data[i]['nUtts']))
+
 
     def _read_MLF(self, file_name, config_parms, data):
         """ Function for MLF data type.
@@ -109,11 +111,12 @@ class HTKDataset(object):
         if 'label_mapping' in config_parms:
             label_mapping_path = config_parms['label_mapping']
             (label_mapping, _) = self._read_label_mapping(label_mapping_path)
+            print("\tTotal %d state names in state list %s" % (len(label_mapping), label_mapping_path))
         else:
             label_mapping = None
         total_nframes = 0
         for i in range(len(lab_nframes)): total_nframes += lab_nframes[i]
-        #return (labels, name2idx, lab_nframes, label_mapping, len(labels), total_nframes)
+        print("\tReading MLF file %s ... total %d entries." % (file_name, data['nUtts']))
         data['data']    = labels;       data['name2idx']      = name2idx
         data['nframes'] = lab_nframes;  data['label_mapping'] = label_mapping
         data['nUtts']   = len(labels);  data['total_nframes'] = total_nframes
@@ -127,7 +130,7 @@ class HTKDataset(object):
         (feats, name2idx, feat_start_f, feat_nframes) = self._read_HTK_feats_SCP(file_name)
         total_nframes = 0
         for i in range(len(feat_nframes)): total_nframes += feat_nframes[i]
-        #return (feats, name2idx, feat_start_f, feat_nframes, len(feats), total_nframes)
+        print("\tReading script file %s ... %d entries." % (file_name, data['nUtts']))
         data['data']    = feats;        data['name2idx']      = name2idx
         data['start_f'] = feat_start_f; data['nframes']       = feat_nframes
         data['nUtts']   = len(feats);   data['total_nframes'] = total_nframes

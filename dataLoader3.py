@@ -275,6 +275,7 @@ class HTKDataLoaderIter(object):
     def __next__(self):
         if self.num_workers == 0:   # same_process loading
             if self.drop_last and self.epoch_samples_remaining < self.batch_size:
+                self.epoch_samples_remaining = self.epoch_size
                 raise StopIteration
             if self.epoch_samples_remaining <= 0:
                 self.epoch_samples_remaining = self.epoch_size
@@ -283,7 +284,8 @@ class HTKDataLoaderIter(object):
                 self.block_data = self._next_random_block()
 
             indices, lengths = self._next_batch_indices()
-            sorted_lengths, order = torch.sort(torch.IntTensor(lengths), 0, descending=True)
+            if not self.frame_mode:
+                sorted_lengths, order = torch.sort(torch.IntTensor(lengths), 0, descending=True)
             inputs = [] if self.block_data[0] else None
             targets = [] if self.block_data[1] else None
             batch = [inputs, targets]
@@ -305,7 +307,10 @@ class HTKDataLoaderIter(object):
 
             if self.pin_memory:
                 batch = pin_memory_batch(batch)
-        return batch, list(sorted_lengths)
+        if self.frame_mode:
+            return batch, None
+        else:
+            return batch, list(sorted_lengths)
 
     next = __next__     # Python 2 compatibility
 
@@ -313,12 +318,13 @@ class HTKDataLoaderIter(object):
         return self
 
     def _next_batch_indices(self):
-        batch_size = min(self.epoch_samples_remaining, self.batch_size) if self.frame_mode else min(self.random_utts_remaining, self.batch_size)
+        batch_size = min(self.epoch_samples_remaining, self.batch_size, self.random_samples_remaining) if self.frame_mode else min(self.random_utts_remaining, self.batch_size)
         batch_indices = [next(self.perm_indices) for _ in range(batch_size)]
         batch_lengths = []
         if self.frame_mode:
             self.epoch_samples_remaining -= batch_size
             self.random_samples_remaining -= batch_size
+            return batch_indices, None
         else:
             self.random_utts_remaining -= batch_size
             for i in range(batch_size):
@@ -328,7 +334,7 @@ class HTKDataLoaderIter(object):
                 self.epoch_samples_remaining  -= uttLength
                 self.random_samples_remaining -= uttLength
                 batch_lengths.append(uttLength)
-        return batch_indices, batch_lengths
+            return batch_indices, batch_lengths
 
 
     def _next_random_block(self):
@@ -346,7 +352,8 @@ class HTKDataLoaderIter(object):
         data_cnt = self.random_samples_remaining if self.frame_mode else len(self.random_block_keys)
         self.random_utts_remaining = None if self.frame_mode else data_cnt
         #self.perm_indices = iter(torch.randperm(data_cnt).long()) if data_cnt > 0 else None
-        self.perm_indices = iter(np.random.permutation(data_cnt))
+        #self.perm_indices = iter(torch.randperm(data_cnt).long())
+        self.perm_indices = iter(np.ramdom.permutation(data_cnt))
 
         # Read HTK Data of keys list
         data = [self.dataset.inputs, self.dataset.targets]
@@ -386,9 +393,10 @@ class HTKDataLoaderIter(object):
             htk_reader.close()
 
             random_block_data.append(tmp_data)
-            if self.frame_mode:
-                random_block_data = np.concatenate(tmp_data, axis=0)
-        return random_block_data
+        if self.frame_mode:
+            return np.concatenate(random_block_data, axis=0)
+        else:
+            return np.array(random_block_data)
 
 
     def _get_MLF_block(self, subdataset):
@@ -405,7 +413,7 @@ class HTKDataLoaderIter(object):
                 random_block_data += tmp_data
             else:
                 random_block_data.append(tmp_data)
-        return random_block_data
+        return np.array(random_block_data)
 
     '''
     def _put_indices(self):
