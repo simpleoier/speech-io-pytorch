@@ -3,7 +3,7 @@
 
 from struct import unpack, pack
 import numpy as np
-import os
+import os, re
 
 LPC = 1
 LPCREFC = 2
@@ -50,7 +50,8 @@ class HTKFeat_read(object):
     """ Read HTK format feature files. """
     def __init__(self, file_name=None):
         self.swap = (unpack('=i', pack('>i', 42))[0] != 42)
-        if (re.match('^[\w\_\.]+\[\d+,\d+\]$', file_name)):
+        # print(re.match('^[\w\_\.\/-]+\[\d+,\d+\]$', file_name))
+        if (re.match('^[\w\_\.\/-]+\[\d+,\d+\]$', file_name)):
             file_name = file_name[:-1]
             lst = file_name.split('[')
             file_name = lst[0]
@@ -115,14 +116,12 @@ class HTKFeat_read(object):
     def readvec(self):
         return self.next()
 
-    def getsegment(self):
-        if not (self.start_f is None):
-            self.seek(self.start_f)
-        else:
-            self.seek(0)
-        data = np.zeros((self.end_f - self.start_f + 1, self.veclen), self.dtype)
-        for i in range(self.end_f - self.start_f + 1):
+    def getsegment(self, start_f, end_f):
+        self.seek(start_f)
+        data = np.zeros((end_f - start_f + 1, self.veclen), self.dtype)
+        for i in range(end_f - start_f + 1):
             data[i] = self.next()
+        return data
 
     def getall(self):
         self.seek(0)

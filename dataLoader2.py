@@ -10,216 +10,415 @@ import math
 import sys
 import re
 import os
+import threading
+import traceback
 import numpy as np
+from HTK_IO import HTKFeat_read, HTKFeat_write
+from sampler import FrameLevSampler, UtteranceLevSampler
+if sys.version_info[0] == 2:
+    import Queue as queue
+    string_classes = basestring
+else:
+    import queue
+    string_classes = (str, bytes)
 
-class HTKDataset(object):
-    """
-     HTK Data set. Provides an interface for features of HTK format
-    """
-    def __init__(self, feat_config_parms, label_config_parms):
-        """
-         [feat,label]config_parms (dict or dict_list):
-             file_name (string): Path to scp file or mlf file
-             type("MLF" or "SCP"),
-             SCP type: dim(int), context_window(tuple)
-             MLF type: dim(int), label_mapping(file_path), label_type("category")
-        """
-        feat_list_in = True
-        if not (type(feat_config_parms) is list):
-            feat_list_in = False
-            feat_config_parms = [feat_config_parms]
-        label_list_in = True
-        if not (type(label_config_parms) is list):
-            label_list_in = False
-            label_config_parms = [label_config_parms]
-
-        base_attributes  = ['_dim', '_data_type', '_type', 's', '_nUtts', '_nframes',
-                            '_max_utt_len', '_context_window', '_label_mapping',
-                            '_list']
-        feat_attributes  = ['feat' + x for x in base_attributes]
-        label_attributes = ['label' + x for x in base_attributes]
-
-        attributes   = [feat_attributes,   label_attributes]
-        list_in      = [feat_list_in,      label_list_in]
-
-        for attr in feat_attributes:
-            ''' Set the attribute to be a list of None [None, None, ...]'''
-            setattr(self, attr, [None]*len(feat_config_parms))
-        for i in range(len(feat_config_parms)):
-            file_name = feat_config_parms[i]['file_name']
-
-            self.feat_dim[i] = feat_config_parms[i]['dim']
-            self.feat_data_type[i] = feat_config_parms[i]['type']
-            if self.feat_data_type[i] == "MLF":
-                self.feat_type[i], self.feats[i], self.feat_nUtts[i], self.feat_nframes[i], self.feat_label_mapping[i] = self.read_mlf(file_name, feat_config_parms[i])
-            elif self.feat_data_type[i] == "SCP":
-                self.feat_context_window[i], self.feats[i], self.feat_list[i], self.feat_nframes[i], self.feat_nUtts[i], self.feat_max_utt_len[i] = self.read_scp(file_name, feat_config_parms[i])
-
-        for attr in label_attributes:
-            ''' Set the attribute to be a list of None [None, None, ...]'''
-            setattr(self, attr, [None]*len(label_config_parms))
-        for i in range(len(label_config_parms)):
-            file_name = label_config_parms[i]['file_name']
-
-            self.label_dim[i] = label_config_parms[i]['dim']
-            self.label_data_type[i] = label_config_parms[i]['type']
-            if self.label_data_type[i] == "MLF":
-                self.label_type[i], self.labels[i], self.label_nUtts[i], self.label_nframes[i], self.label_label_mapping[i] = self.read_mlf(file_name, label_config_parms[i])
-            elif self.label_data_type[i] == "SCP":
-                self.label_context_window[i], self.labels[i], self.label_list[i], self.label_nframes[i], self.label_nUtts[i], self.label_max_utt_len[i] = self.read_scp(file_name, label_config_parms[i])
-
-        for i in range(len(attributes)):
-            if not list_in[i]:
-                for attr in attributes[i]:
-                    at = getattr(self, attr, None)
-                    setattr(self, attr, at[0])
-
-    def read_mlf(self, file_name, config_parms):
-        """ Function for MLF data type.
-              file_name(string),
-              config_parms(dictionary)
-        """
-        label_mapping_path = config_parms['label_mapping']
-        label_type = config_parms['label_type']
-        code, (labels, nUtts, nframes) = self.read_htk_mlf(file_name)
-        code, label_mapping = self.read_label_mapping(label_mapping_path)
-        return label_type, labels, nUtts, nframes, label_mapping
+_use_shared_memory = False
+"""Whether to use shared memory in default_collate"""
 
 
-    def read_scp(self, file_name, config_parms):
-        """ Function for SCP data type.
-              file_name(string),
-              config_parms(dictionary)
-        """
-        context_window = config_parms['context_window'] if 'context_window' in config_parms else (0, 0)
-        max_utt_len = config_parms['max_utt_len'] if 'max_utt_len' in config_parms else None
-        code, (feats, feats_list, nframes) = self.read_htk_feats_scp(file_name, max_utt_len)
-        nUtts = len(feats_list)
-        return context_window, feats, feats_list, nframes, nUtts, max_utt_len
+class ExceptionWrapper(object):
+    "Wraps an exception plus traceback to communicate across threads."
+
+    def __init__(self, exc_info):
+        self.exc_type = exc_info[0]
+        self.exc_msg = "".join(traceback.format_exception(*exc_info))
 
 
-    def read_htk_feats_scp(self, file_name=None, max_utt_len=None):
-        """
-         Read the scp files in htk format: xxxxxxx.feats=/path/to/xxxxxx.feats[start_position, end_position]
-         Output: code, feats(dictionary, ('name(xxxxxx)':['path(/path/to/xxxxxx.feats)', length] ) ), feats_list(list, all feats names), nframes(int, num of frames in total)
-                code: 0: Success
-                      1: File path does not exist
-                      2: Format has problem
-        """
-        if (file_name == None or not os.path.exists(file_name)):
-            """ raise FileNotExistsError """
-            return 1, ({}, [], 0)
-        feats = {}
-        feats_list = []
-        nframes = 0
-        with open(file_name) as file:
-            while 1:
-                line = file.readline().strip()
-                if (line==''): break
-                feat_name, res_info = line.split('=')
-                feat_name = ".".join(feat_name.split(".")[:-1])
-                l_bracket_p = res_info.find('[')
-                if l_bracket_p is None:
-                    """ raise FileFormatError """
-                    print("  Error: file format is not compatible %s" % line)
-                    return 2, ({}, [], 0)
-                feat_path = res_info[:l_bracket_p]
-                res_info = res_info[l_bracket_p+1:]
-                comma_p = res_info.find(',')
-                start_position = int(res_info[:comma_p])
-                end_position   = int(res_info[comma_p+1:-1])
-                length = end_position - start_position + 1
-                if (max_utt_len != None and length > max_utt_len): continue     # Omit the utterances that exceed the maximum length limit
+def _worker_loop(dataset, index_queue, data_queue, collate_fn):
+    global _use_shared_memory
+    _use_shared_memory = True
 
-                feats_list.append(feat_name)
-                feats[feat_name] = [feat_path, length]
-                nframes += length
-
-        return 0, (feats, feats_list, nframes)
+    torch.set_num_threads(1)
+    while (True):
+        r = index_queue.get()
+        if r is None:
+            data_queue.put(None)
+            break
+        idx, batch_indices = r
+        try:
+            samples = collate_fn([dataset[i] for i in batch_indices])
+        except Exception:
+            data_queue.put((idx, ExceptionWrapper(sys.exc_info())))
+        else:
+            data_queue.put((idx, samples))
 
 
-    def read_htk_mlf(self, file_name=None):
-        """
-         Read the MLF file in htk format: #!MLF!# \n "xxxxxx.lab" \n start end lab \n ...
-         Output: code, labels(dictionary, ('name(xxxxxx)': numpy_array_lab)), nUtts(int), nframes(int)
-        """
-        if (file_name == None or not os.path.exists(file_name)):
-            """ raise FileNotExistsError """
-            return 1, ({}, 0, 0)
-        labels = {}
-        nUtts = 0
-        nframes = 0
+def _pin_memory_loop(in_queue, out_queue, done_event):
+    while True:
+        try:
+            r = in_queue.get()
+        except:
+            if done_event.is_set():
+                return
+            raise
+        if r is None:
+            break
+        if isinstance(r[1], ExceptionWrapper):
+            out_queue.put(r)
+            continue
+        idx, batch = r
+        try:
+            batch = pin_memory_batch(batch)
+        except Exception:
+            out_queue.put((idx, ExceptionWrapper(sys.exc_info())))
+        else:
+            out_queue.put((idx, batch))
 
-        start_mlf = False
-        with open(file_name) as file:
-            while 1:
-                line = file.readline().strip()
-                if (line==''): break
-                if (start_mlf == False):
-                    if (line=="#!MLF!#"):
-                        start_mlf = True
+
+numpy_type_map = {
+    'float64': torch.DoubleTensor,
+    'float32': torch.FloatTensor,
+    'float16': torch.HalfTensor,
+    'int64': torch.LongTensor,
+    'int32': torch.IntTensor,
+    'int16': torch.ShortTensor,
+    'int8': torch.CharTensor,
+    'uint8': torch.ByteTensor,
+}
+
+
+def convert_utts_list_tensor(data, tensor):
+    "Convert data[batch_size][uttLen][dim] to a tensor."
+    uttsLength = [len(utt) for utt in data]
+    maxLen = max(uttsLength)
+    dim = len(data[0][0]) if type(data[0][0]) == list else 1
+    dataTensor = tensor(len(data), maxLen, dim).zero_()
+    dataTensor.squeeze_(dataTensor.dim()-1)
+    for utt in range(len(data)):
+        dataTensor[utt][0:len(data[utt])].copy_(tensor(data[utt]))
+    return dataTensor
+
+
+def default_collate(batch, frame_mode):
+    "Puts each data field into a tensor with outer dimension batch size"
+    if frame_mode:     # batch[batch_size][dim]
+        if torch.is_tensor(batch):
+            return batch
+        if torch.is_tensor(batch[0]):
+            out = None
+            if _use_shared_memory:
+                # If we're in a background process, concatenate directly into a
+                # shared memory tensor to avoid an extra copy
+                numel = sum([x.numel() for x in batch])
+                storage = batch[0].storage()._new_shared(numel)
+                out = batch[0].new(storage)
+            return torch.stack(batch, 0, out=out)
+        elif type(batch[0]).__module__ == 'numpy':
+            elem = batch[0]
+            if type(elem).__name__ == 'ndarray':
+                return torch.stack([torch.from_numpy(b) for b in batch], 0)
+            if elem.shape == ():  # scalars
+                py_type = float if elem.dtype.name.startswith('float') else int
+                return numpy_type_map[elem.dtype.name](list(map(py_type, batch)))
+        elif isinstance(batch[0], collections.Mapping):
+            return {key: default_collate([d[key] for d in batch]) for key in batch[0]}
+        elif isinstance(batch[0], collections.Sequence):
+            transposed = zip(*batch)
+            return [default_collate(samples) for samples in transposed]
+        elif isinstance(batch[0][0], int):
+            return torch.LongTensor(batch)
+        elif isinstance(batch[0][0], float):
+            return torch.DoubleTensor(batch)
+        elif isinstance(batch[0][0], string_classes):
+            return batch
+    else:               # batch[batch_size][utt_len][dim]
+        if torch.is_tensor(batch):
+            return batch
+        elif torch.is_tensor(batch[0]):
+            out = None
+            if _use_shared_memory:
+                # If we're in a background process, concatenate directly into a
+                # shared memory tensor to avoid an extra copy
+                numel = sum([x.numel() for x in batch])
+                storage = batch[0].storage()._new_shared(numel)
+                out = batch[0].new(storage)
+            return torch.stack(batch, 0, out=out)
+        elif type(batch[0]).__module__ == 'numpy':
+            elem = batch[0]
+            if type(elem).__name__ == 'ndarray':
+                return torch.stack([torch.from_numpy(b) for b in batch], 0)
+            if elem.shape == ():  # scalars
+                py_type = float if elem.dtype.name.startswith('float') else int
+                return numpy_type_map[elem.dtype.name](list(map(py_type, batch)))
+        elif isinstance(batch[0][0][0], int):
+            return convert_utts_list_tensor(batch, torch.IntTensor)
+        elif isinstance(batch[0][0][0], float):
+            return convert_utts_list_tensor(batch, torch.FloatTensor)
+        elif isinstance(batch[0][0][0], string_classes):
+            return batch
+
+    raise TypeError(("batch must contain tensors, numbers, dicts or lists; found {}"
+                 .format(type(batch[0]))))
+
+
+def pin_memory_batch(batch):
+    if torch.is_tensor(batch):
+        return batch.pin_memory()
+    elif isinstance(batch, string_classes):
+        return batch
+    elif isinstance(batch, collections.Mapping):
+        return {k: pin_memory_batch(sample) for k, sample in batch.items()}
+    elif isinstance(batch, collections.Sequence):
+        return [pin_memory_batch(sample) for sample in batch]
+    else:
+        return batch
+
+
+class HTKDataLoaderIter(object):
+    "Iterates once over the DataLoader's dataset, as specified by the sampler"
+
+    def __init__(self, loader):
+        self.dataset = loader.dataset
+        self.batch_size = loader.batch_size
+        self.frame_mode = loader.frame_mode
+        self.random_size = min(loader.random_size, self.dataset.inputs[0]['total_nframes'])
+        self.epoch_size = min(loader.epoch_size, self.dataset.inputs[0]['total_nframes'])
+
+        self.truncate_size = loader.truncate_size
+        self.collate_fn = loader.collate_fn
+        self.num_workers = loader.num_workers
+        self.pin_memory = loader.pin_memory
+        self.drop_last = loader.drop_last
+        self.done_event = threading.Event()
+
+        self.epoch_samples_remaining = self.epoch_size
+        self.random_samples_remaining = 0
+        self.random_utts_remaining = 0
+
+        self.random_utt_idx = 0
+        self.max_utt_len = self.dataset.max_utt_len2
+
+        self.all_keys = list(loader.dataset.inputs[0]['name2idx'])
+        self.random_block_keys = None
+
+        self.block_data = self._next_random_block()
+
+        '''
+        if self.num_workers > 0:
+            self.index_queue = multiprocessing.SimpleQueue()
+            self.data_queue = multiprocessing.SimpleQueue()
+            self.batches_outstanding = 0
+            self.shutdown = False
+            self.send_idx = 0
+            self.rcvd_idx = 0
+            self.reorder_dict = {}
+
+            self.workders = [
+                multiprocessing.Process(
+                    target=_worker_loop,
+                    args=(self.dataset, self.index_queue, self.data_queue, self.collate_fn)
+                ) for _ in range(self.num_workers)]
+
+            for w in self.workers:
+                w.daemon = True     # ensure that the worker exists on process exit
+                w.start()
+
+            if self.pin_memory:
+                in_data = self.data_queue
+                self.data_queue = queue.Queue()
+                self.pin_thread = threading.Thread(
+                    target = _pin_memory_loop,
+                    args=(in_data, self.data_queue, self.done_event))
+                self.pin_thread.daemon = True
+                self.pin_thread.start()
+
+            # prime the prefetch loop
+            for _ in range(2 * self.num_workers):
+                self._put_indices()
+        '''
+
+        print('HTKDataLoaderIterator initialization close.')
+
+
+    def __len__(self):
+        if self.frame_mode:
+            data_cnt = self.dataset.inputs[0]['total_nframes']
+        else:
+            data_cnt = self.dataset.inputs[0]['nUtts']
+        if self.drop_last:
+            return data_cnt // self.batch_size
+        else:
+            return (data_cnt + self.batch_size - 1) // self.batch_size
+
+    def __next__(self):
+        if self.num_workers == 0:   # same_process loading
+            if self.drop_last and self.epoch_samples_remaining < self.batch_size:
+                raise StopIteration
+            if self.epoch_samples_remaining <= 0:
+                self.epoch_samples_remaining = self.epoch_size
+                raise StopIteration
+            if self.random_samples_remaining == 0:
+                self.block_data = self._next_random_block()
+
+            indices, lengths = self._next_batch_indices()
+            inputs = [] if self.block_data[0] else None
+            targets = [] if self.block_data[1] else None
+            batch = [inputs, targets]
+            for i in range(len(self.block_data)):
+                if batch[i] is None: continue
+
+                for j in range(len(self.block_data[i])):
+                    tmp_batch = []
+                    for k in indices:
+                        tmp_batch.append(self.block_data[i][j][k])
+
+                    #batch[i].append(self.collate_fn(tmp_batch, self.frame_mode))
+                    tmp_batch1 = tmp_batch
+                    while (True):
+                        if type(tmp_batch1)==list:
+                            tmp_batch1 = tmp_batch1[0]
+                            continue
+                        elif isinstance(tmp_batch1, int):
+                            defaultTensor = torch.IntTensor
+                            break
+                        elif isinstance(tmp_batch1, float):
+                            defaultTensor = torch.FloatTensor
+                            break
+                        else:
+                            raise Exception("DataLoaderIter only support int and float type.")
+
+                    if self.frame_mode:
+                        batch[i].append(defaultTensor(tmp_batch))
                     else:
-                        """ raise FileFormatError """
-                        print("  Error: file format is not compatible in label file")
-                        return 2, ({}, 0, 0)
-                if (re.match('^\"[\.a-zA-Z0-9-_]+\.lab\"$', line)):   #label Name
-                    nUtts += 1
-                    feat_name = line[1:-4]
-                    label_list = []
-                    last_time_stamp = 0
-                    label_complete = False
-                elif (re.match('^[\d]+ [\d]+ [\d]+$', line)):     # labels
-                    lst = line.split(' ')
-                    start_position = int(lst[0]) // 100000
-                    end_position   = int(lst[1]) // 100000
-                    nframes += end_position - start_position
-                    label          = int(lst[2])
-                    if (start_position != last_time_stamp):
-                        """ raise FileFormatError """
-                        print("  Error: file format is not compatible in label file, missing labels")
-                        return 2, ({}, 0, 0)
-                    for i in range(start_position, end_position):
-                        label_list.append(label)
-                    last_time_stamp = end_position
-                elif (re.match('^\.$', line)):      # End of current label
-                    labels[feat_name] = np.array(label_list)
-                    label_complete = True
-        if not label_complete:
-            """ raise FileFormatError """
-            print("  Error: file format is not compatible in label file, incompleting labels")
-            return 2, ({}, 0, 0)
+                        batch[i].append(convert_utts_list_tensor(tmp_batch, defaultTensor))
 
-        return 0, (labels, nUtts, nframes)
+            if self.pin_memory:
+                batch = pin_memory_batch(batch)
+        return batch, lengths
+
+    next = __next__     # Python 2 compatibility
+
+    def __iter__(self):
+        return self
+
+    def _next_batch_indices(self):
+        batch_size = min(self.epoch_samples_remaining, self.batch_size) if self.frame_mode else min(self.random_utts_remaining, self.batch_size)
+        batch_indices = [next(self.perm_indices) for _ in range(batch_size)]
+        batch_lengths = []
+        if self.frame_mode:
+            self.epoch_samples_remaining -= batch_size
+            self.random_samples_remaining -= batch_size
+        else:
+            self.random_utts_remaining -= batch_size
+            for i in range(batch_size):
+                key = self.random_block_keys[batch_indices[i]]
+                key2idx0 = self.dataset.inputs[0]['name2idx'][key]
+                uttLength = self.dataset.inputs[0]['nframes'][key2idx0]
+                self.epoch_samples_remaining  -= uttLength
+                self.random_samples_remaining -= uttLength
+                batch_lengths.append(uttLength)
+        return batch_indices, batch_lengths
 
 
-    def read_label_mapping(self, file_name=None):
-        """
-         Label mapping file: lists all the possible label values, one per line,
-         which might be text or numeric. The line number is the identifier that will
-         be used by CNTK to identify that label. This parameter is often moved to the
-         root level to share with other Command Sections. For example, it’s important
-         that the Evaluation Command Section share the same label mapping as the
-         trainer, otherwise, the evaluation results will not be accurate.
-        """
-        if (file_name == None or not os.path.exists(file_name)):
-            """ raise FileNotExistsError """
-            return 1, (None)
-        label_mapping = []
-        label_type_int = True
-        with open(file_name, 'r') as file:
-            while 1:
-                line = file.readline().strip()
-                if (line == ''): break
-                if not re.match('\d+', line):
-                    label_type_int = False
-                label_mapping.append(line)
-        if (label_type_int):
-            label_mapping = [int(x) for x in label_mapping]
-        return 0, label_mapping
+    def _next_random_block(self):
+        """Load the next random block when the current block is drained."""
+        self.random_block_keys = []
+        while True:
+            key = self.all_keys[self.random_utt_idx]
+            key2idx0 = self.dataset.inputs[0]['name2idx'][key]
+            if (self.random_samples_remaining + self.dataset.inputs[0]['nframes'][key2idx0]) <= self.random_size:
+                self.random_block_keys.append(key)
+                self.random_utt_idx = (self.random_utt_idx + 1) % self.dataset.inputs[0]['nUtts']
+                self.random_samples_remaining += self.dataset.inputs[0]['nframes'][key2idx0]
+            else:
+                break
+        data_cnt = self.random_samples_remaining if self.frame_mode else len(self.random_block_keys)
+        self.random_utts_remaining = None if self.frame_mode else data_cnt
+
+        # Read HTK Data of keys list
+        data = [self.dataset.inputs, self.dataset.targets]
+        inputs_block = [] if data[0] else None
+        targets_block = [] if data[1] else None
+        block_data = [inputs_block, targets_block]
+        for i in range(len(block_data)):
+            if block_data[i] is None: continue
+
+            for j in range(len(data[i])):
+                if data[i][j]['data_type'] == 'SCP':
+                    tmp_block_data = self._get_SCP_block(data[i][j])
+                elif data[i][j]['data_type'] == 'MLF':
+                    tmp_block_data = self._get_MLF_block(data[i][j])
+                block_data[i].append(tmp_block_data)
+
+        #self.perm_indices = iter(torch.randperm(data_cnt).long()) if data_cnt > 0 else None
+        self.perm_indices = iter(torch.randperm(data_cnt).long())
+        return block_data
 
 
-def default_collate():
-    pass
+    def _get_SCP_block(self, subdataset):
+        # Read the HTK feats of a list in a random block
+        # :params: subdataset: one input or target in SCP format
+        random_block_data = []
+        dimension = subdataset['dim']
+
+        for i in range(len(self.random_block_keys)):
+            key = self.random_block_keys[i]
+            key2idx0 = subdataset['name2idx'][key]
+            feat_path = subdataset['data'][key2idx0]
+            feat_start = subdataset['start_f'][key2idx0]
+            feat_len = subdataset['nframes'][key2idx0]
+
+            htk_reader = HTKFeat_read(feat_path)
+            tmp_data = htk_reader.getsegment(feat_start, feat_start+feat_len-1)
+            if (tmp_data.shape[1] != dimension):
+                raise Exception("Dimension does not match, %d in configure vs. %d in data" % (dimension, tmp_data.shape[1]))
+            htk_reader.close()
+
+            tmp_data = tmp_data.tolist()
+
+            if self.frame_mode:
+                random_block_data += tmp_data
+            else:
+                random_block_data.append(tmp_data)
+        return random_block_data
+
+
+    def _get_MLF_block(self, subdataset):
+        # Read the HTK feats of a list in a random block
+        # :params: subdataset: one input or target in MLF format
+        random_block_data = []
+
+        for i in range(len(self.random_block_keys)):
+            key = self.random_block_keys[i]
+            key2idx0 = subdataset['name2idx'][key]
+            tmp_data = subdataset['data'][key2idx0]
+
+            if self.frame_mode:
+                random_block_data += tmp_data
+            else:
+                random_block_data.append(tmp_data)
+        return random_block_data
+
+    '''
+    def _put_indices(self):
+        assert self.batches_outstanding < 2 * self.num_workers
+        if self.samples_remaining > 0:
+            if self.samples_remaining < self.batch_size and self.drop_last:
+                self._next_indices()
+            else:
+                self.index_queue.put((self.send_idx, self._next_indices()))
+                self.batches_outstanding += 1
+                self.send_idx += 1
+    '''
+
+
+    def __getstate__(self):
+        # TODO: add limited pickling support for sharing an iterator
+        # across multiple threads for HOGWILD.
+        # Probably the best way to do this is by moving the sample pushing
+        # to a separate thread and then just sharing the data queue
+        # but signalling the end is tricky without a non-blocking API
+        raise NotImplementedError("DataLoaderIterator cannot be pickled")
 
 
 class HTKDataLoader(DataLoader):
@@ -228,53 +427,46 @@ class HTKDataLoader(DataLoader):
      single- or multi-process iterators over the dataset.
      Arguments:
          dataset (Dataset): dataset from which to load the data.
-         batch_size (int, optional): how many samples per batch to load
-             (default: 1).
-         shuffle (bool, optional): set to ``True`` to have the data reshuffled
-             at every epoch (default: False).
-         sampler (Sampler, optional): defines the strategy to draw samples from
-             the dataset. If specified, the ``shuffle`` argument is ignored.
+         batch_size (int, optional): how many samples per batch to load (default: 1). In frame_mode,
+            batch_size means number of samples, otherwise, it means number of utterances.
          num_workers (int, optional): how many subprocesses to use for data
-             loading. 0 means that the data will be loaded in the main process
-             (default: 0)
+            loading. 0 means that the data will be loaded in the main process
+            (default: 0)
          collate_fn (callable, optional)
          pin_memory (bool, optional)
          drop_last (bool, optional): set to ``True`` to drop the last incomplete batch,
-             if the dataset size is not divisible by the batch size. If False and
-             the size of dataset is not divisible by the batch size, then the last batch
-             will be smaller. (default: False)
-         max_utt_length(int, optional): defines the maximum utterance length to be loaded
+            if the dataset size is not divisible by the batch size. If False and
+            the size of dataset is not divisible by the batch size, then the last batch
+            will be smaller. (default: False)
          frame_mode(bool, optional): set to ``False`` to enable (utterance) sequence
          random_size(int, optional): defines the number of frames to load for once
+         epoch_size(int, optional): defines the number of frames for each epoch
+         truncate_size(int, optional): defines the truncate length in RNN
     """
-    def __init__(self, dataset, batch_size=1, shuffle=False, sampler=None, num_workers=0,
+    def __init__(self, dataset, batch_size=1, num_workers=0,
                  collate_fn=default_collate, pin_memory=False, drop_last=False,
-                 max_utt_length=None, frame_mode=False, random_size=None):
+                 frame_mode=False, random_size=None, epoch_size=None, truncate_size=0):
         self.dataset = dataset
-        self.batch_size = batch_size
         self.num_workers = num_workers
         self.collate_fn = collate_fn
         self.pin_memory = pin_memory
-        self.drop_last = drop_last
+        self.drop_last  = drop_last
 
-        self.max_utt_length = max_utt_length
-        self.frame_mode = frame_mode
-        self.random_size = random_size
-
-        if sampler is not None:
-            self.sampler = sampler
-        elif shuffle:
-            self.sampler = torch_data.RandomSampler(dataset)
-        elif not shuffle:
-            self.sampler = torch_data.SequentialSampler(dataset)
+        self.frame_mode  = frame_mode
+        self.batch_size  = batch_size
+        self.random_size = random_size if random_size else self.dataset.inputs[0]['total_nframes']
+        self.epoch_size  = epoch_size if epoch_size else self.random_size
+        self.truncate_size = truncate_size
+        print('HTKDataLoader initialization close.')
 
 
     def __iter__(self):
-        return torch_data.DataLoaderIter(self)
+        return HTKDataLoaderIter(self)
 
 
     def __len__(self):
+        """Epoch size."""
         if self.drop_last:
-            return len(self.sampler) // self.batch_size
+            return self.dataset.inputs[0]['total_nframes'] // self.epoch_size
         else:
-            return (len(self.sampler) + self.batch_size - 1) // self.batch_size
+            return (self.dataset.inputs[0]['total_nframes'] + self.epoch_size - 1) // self.epoch_size

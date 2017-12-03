@@ -1,62 +1,81 @@
-#!/usr/bin/env python
+#!/home/xkc09/Documents/xkc09/src/anaconda3/envs/common-py35/bin/python
 # encoding: utf-8
 
-from dataLoader import *
-#from dataLoader2 import *
-from time import clock
+import sys, os
+from dataset import HTKDataset
+from dataLoader3 import HTKDataLoader
+import numpy as np
+import torch
 
-"""
- Test HTKDataset
-"""
-start = clock()
-feat_config_parms = [dict(file_name='../test_data/tmp_htk.scp', type="SCP", dim=40, context_window=(0,0)), dict(file_name='', type="SCP", dim=40, context_window=(0,0))]
-feat_config_parms = [dict(file_name='../test_data/tmp_htk.scp', type="SCP", dim=40, context_window=(0,0)), dict(file_name='../test_data/tmp_htk.scp', type="SCP", dim=40, context_window=(0,0))]
-label_config_parms = [dict(file_name='../test_data/tmp_htk.mlf', type="MLF", dim=4009, label_type="category", label_mapping='../test_data/label_mapping'), dict(file_name='', type="MLF", dim=4009, label_type="category", label_mapping='../test_data/label_mapping')]
-label_config_parms = [dict(file_name='../test_data/tmp_htk.mlf', type="MLF", dim=4009, label_type="category", label_mapping='../test_data/label_mapping'), dict(file_name='../test_data/tmp_htk.mlf', type="MLF", dim=4009, label_type="category", label_mapping='../test_data/label_mapping')]
-'''
-data = HTKDataset(feat_config_parms, label_config_parms)
-for i in range(len(feat_config_parms)):
-    print(data.feat_nUtts[i], data.feat_nframes[i])
-    print(data.label_nUtts[i], data.label_nframes[i])
-    print(data.feats[i])
-    print(data.labels[i])
-    if data.labels[i] is None: continue
-    for (key,value) in data.labels[i].items():
-        print(value.shape)
-    print(data.label_label_mapping[i])
-'''
-for i in range(len(feat_config_parms)):
-    print(type(feat_config_parms[i]))
-    data = HTKDataset(feat_config_parms[i], label_config_parms[i])
-    print(data.inputs['nUtts'], data.inputs['nframes'])
-    print(data.targets['nUtts'], data.targets['nframes'])
-    print(data.inputs['data'])
-    print(data.targets['data'])
-    if data.targets['data'] is None: continue
-    for (key,value) in data.targets['name2idx'].items():
-        print(key,value)
-    print(data.targets['label_mapping'])
+sys.path.append('/home/xkc09/Documents/xkc09/program/kaldi-io/kaldi-io-pytorch')
 
-print(type(feat_config_parms))
-data = HTKDataset(feat_config_parms, label_config_parms)
-print(data.inputs[0]['nUtts'], data.inputs[0]['nframes'])
-print(data.targets[0]['nUtts'], data.targets[0]['nframes'])
-print(data.inputs[0]['data'])
-print(data.targets[0]['data'])
-for (key,value) in data.targets[0]['name2idx'].items():
-    print(key,value)
-print(data.targets[0]['label_mapping'])
+data_dir = '/home/xkc09/Documents/xkc09/program/kaldi-io/test_data'
+feat_scp_name = os.path.join(data_dir, 'feat.scp')
+label_mlf_name = os.path.join(data_dir, 'label.mlf')
+label_mapping_name = os.path.join(data_dir, 'label.mapping')
+max_utt_len = 220
 
-finish = clock()
-print((finish - start) / 1000000)
-"""
- Test HTK_IO
-"""
-from HTK_IO import HTK_open, FBANK, _O
+leftFeatContext = 5
+rightFeatContext = 5
 
-read_file_path = "/slfs1/users/xkc09/asr/PIT/data/mixspeech/ami/data-fbank40/train_10/features_40dim/AMI_EN2001a_H00_MEE068_0000557_0000594_10_AMI_TS3006d_H01_MTD023UID_0158383_0158414.fbank"
-htk_reader = HTK_open(read_file_path,'rb')
-data = htk_reader.getall()
-write_file_path = "../test_data/test_write_htk"
-htk_writer = HTK_open(write_file_path, 'wb', veclen=40, paramKind = (FBANK | _O))
-htk_writer.writeall(data)
+label_mapping = open(label_mapping_name, 'w')
+for i in range(1024):
+    label_mapping.write(str(i)+'\n')
+label_mapping.close()
+
+feat_config_parms = [dict(file_name=feat_scp_name, type="SCP",
+                          dim=40, context_window=(leftFeatContext, rightFeatContext))
+                     ]
+label_config_parms = [dict(file_name=label_mlf_name, type="MLF",
+                           dim=1024, label_type="category",
+                           label_mapping=label_mapping_name)
+                      ]
+
+data_set = HTKDataset(feat_config_parms, label_config_parms, max_utt_len)
+data_loader_frame = HTKDataLoader(data_set, batch_size=256, random_size=34560000, epoch_size=34560000, random_seed=19931225, frame_mode=True)
+data_iter = iter(data_loader_frame)
+#data_loader_utts = HTKDataLoader(data_set, batch_size=1, random_size=34560000, epoch_size=34560000, random_seed=19931225, frame_mode=False)
+#data_iter = iter(data_loader_utts)
+
+mean, std = data_iter.normalize('globalMeanVar')
+for data_idx in range(len(mean)):
+    for item_idx in range(len(mean[data_idx])):
+        if mean[data_idx][item_idx] is None: continue
+        mean_item = mean[data_idx][item_idx]
+        std_item = std[data_idx][item_idx]
+        mean_item = np.tile(mean_item, (leftFeatContext + 1 + rightFeatContext))
+        std_item = np.tile(std_item, (leftFeatContext + 1 + rightFeatContext))
+        mean[data_idx][item_idx] = torch.from_numpy(mean_item).float()
+        std[data_idx][item_idx] = torch.from_numpy(std_item).float()
+
+def normalize(input, mean, std):
+    output = input - mean
+    output = output / std
+    return output
+
+for epoch in range(1):
+    print("Epoch: %d" % epoch)
+    batch_cnt = 0
+    for batch, lengths in data_iter:
+        batch_cnt += 1
+        feat = batch[0][0].view(batch[0][0].size(0), -1)
+        label = batch[1][0].long()
+
+        feat_norm = normalize(feat, mean[0][0], std[0][0])
+        print(feat)
+        print(feat.mean(dim=0))
+        print(feat.std(dim=0))
+        print(feat_norm)
+        print(feat_norm.mean(dim=0))
+        print(feat_norm.std(dim=0))
+        exit()
+
+        for i in range(feat.size(0)):
+            if int(feat[i][200]) != int(label[i][0]):
+                print("NO")
+
+        #print(batch_cnt, feat.size(), label.size())
+
+        #for i in range(feat.size(0)):
+        #    if (int(feat[i][200]) != int(label[i])):
+        #        print("False:", feat[i][0], label[i])
