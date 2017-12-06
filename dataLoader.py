@@ -16,7 +16,6 @@ import threading
 import traceback
 import numpy as np
 from HTK_IO import HTKFeat_read, HTKFeat_write
-from sampler import FrameLevSampler, UtteranceLevSampler
 if sys.version_info[0] == 2:
     import Queue as queue
     string_classes = basestring
@@ -199,7 +198,7 @@ def pin_memory_batch(batch):
 
 
 class HTKDataLoaderIter(object):
-    "Iterates once over the DataLoader's dataset, as specified by the sampler"
+    "Iterates once over the DataLoader's dataset"
     """ Methods:
             next()
             normalize()
@@ -225,7 +224,6 @@ class HTKDataLoaderIter(object):
         self.done_event = threading.Event()
         self.random_seed = loader.random_seed
         self.permutation = loader.permutation
-        self.max_utt_len = self.dataset.max_utt_len2
         np.random.seed(self.random_seed)
         self.all_keys = loader.dataset.all_keys
 
@@ -528,14 +526,17 @@ class HTKDataLoaderIter(object):
     def normalize(self, mode=None):
         """ return mean_data, std_data
         """
+        mean_data_block = [[None] * len(self.dataset.inputs),
+                           [None] * len(self.dataset.targets)]
+        std_data_block  = [[None] * len(self.dataset.inputs),
+                           [None] * len(self.dataset.targets)]
+
         valid_mode = {None, 'globalMean', 'globalVar', 'globalMeanVar'}
         if mode not in valid_mode:
             raise ValueError("normalization must be one of %r" % valid_mode)
 
         def Mean():
             self.logger.info("DataLoaderIterator: Normalization -- means")
-            mean_data_block = [[None] * len(self.dataset.inputs),
-                               [None] * len(self.dataset.targets)]
             while True:
                 data_block, _, nsamples = self._next_random_block(norm_mode=True)
                 for data_idx, data in enumerate(data_block):
@@ -551,8 +552,6 @@ class HTKDataLoaderIter(object):
 
         def Std():
             self.logger.info("DataLoaderIterator: Normalization -- standard variance")
-            std_data_block = [[None] * len(self.dataset.inputs),
-                              [None] * len(self.dataset.targets)]
             while True:
                 data_block, _, nsamples = self._next_random_block(norm_mode=True)
                 for data_idx, data in enumerate(data_block):
@@ -573,18 +572,16 @@ class HTKDataLoaderIter(object):
 
         # None
         if mode is None:
-            return None, None
+            return mean_data_block, std_data_block
 
         frame_mode_backup = self.frame_mode
         self.frame_mode = True
         dataset = [self.dataset.inputs, self.dataset.targets]
 
         mean_data_block = Mean()
-        if mode != 'globalMean':
-            std_data_block = Std()
+        if mode != 'globalMean': std_data_block = Std()
 
         self.frame_mode = frame_mode_backup
-
         return mean_data_block, std_data_block
 
 
@@ -612,7 +609,7 @@ class HTKDataLoaderIter(object):
 
 class HTKDataLoader(DataLoader):
     """
-     HTK Data loader. Combines a dataset and a sampler, and provides
+     HTK Data loader. Combines a dataset and provides
      single- or multi-process iterators over the dataset.
      Arguments:
          dataset (Dataset): dataset from which to load the data.

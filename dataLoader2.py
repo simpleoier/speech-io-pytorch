@@ -8,19 +8,22 @@ import torch.utils.data as torch_data
 import collections
 import math
 import sys
+import io
 import re
 import os
+import time
+import logging
 import threading
 import traceback
 import numpy as np
 from HTK_IO import HTKFeat_read, HTKFeat_write
-from sampler import FrameLevSampler, UtteranceLevSampler
 if sys.version_info[0] == 2:
     import Queue as queue
     string_classes = basestring
 else:
     import queue
     string_classes = (str, bytes)
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 _use_shared_memory = False
 """Whether to use shared memory in default_collate"""
@@ -79,23 +82,44 @@ numpy_type_map = {
     'float64': torch.DoubleTensor,
     'float32': torch.FloatTensor,
     'float16': torch.HalfTensor,
-    'int64': torch.LongTensor,
-    'int32': torch.IntTensor,
-    'int16': torch.ShortTensor,
-    'int8': torch.CharTensor,
-    'uint8': torch.ByteTensor,
+    'int64'  : torch.LongTensor,
+    'int32'  : torch.IntTensor,
+    'int16'  : torch.ShortTensor,
+    'int8'   : torch.CharTensor,
+    'uint8'  : torch.ByteTensor,
 }
 
 
-def convert_utts_list_tensor(data, tensor):
-    "Convert data[batch_size][uttLen][dim] to a tensor."
-    uttsLength = [len(utt) for utt in data]
+def convertUttsList2Tensor(data, tensor, uttsLength):
+    "Convert data[batch_size][uttLen]([context_window])[vec_len] to a tensor."
+    dim_cnt = 2
+    ctx_len = 1 # Context Window Length
+    vec_len = 1
+    if type(data[0]).__module__ == np.__name__: # numpy ndarray list
+        if len(data[0].shape) >= 2:
+            dim_cnt = len(data[0].shape) + 1
+            vec_len = data[0].shape[-1]
+            ctx_len = data[0].shape[-2]
+    else:   # ``List'' type in python
+        subdata = data[0][0]
+        while (type(subdata) == list):
+            dim_cnt += 1
+            ctx_len = vec_len
+            vec_len = len(subdata)
+            subdata = subdata[0]
+
     maxLen = max(uttsLength)
-    dim = len(data[0][0]) if type(data[0][0]) == list else 1
-    dataTensor = tensor(len(data), maxLen, dim).zero_()
-    dataTensor.squeeze_(dataTensor.dim()-1)
-    for utt in range(len(data)):
-        dataTensor[utt][0:len(data[utt])].copy_(tensor(data[utt]))
+    if (dim_cnt == 3):  # Context Window = 0
+        ctx_len = 1
+    dataTensor = tensor(len(data), maxLen, ctx_len, vec_len).zero_()
+    dataTensor.squeeze_(dataTensor.dim()-2) # Context Window Squeeze
+    dataTensor.squeeze_(dataTensor.dim()-1) # Vector Length Squeeze
+
+    for data_idx, data_item in enumerate(data):
+        if type(data_item).__module__ == np.__name__:   # List of numpy ndarray
+            dataTensor[data_idx][0:uttsLength[data_idx]].copy_(torch.from_numpy(data_item))
+        else:   # ``List'' type in python
+            dataTensor[data_idx][0:uttsLength[data_idx]].copy_(tensor(data_item))
     return dataTensor
 
 
@@ -150,15 +174,11 @@ def default_collate(batch, frame_mode):
             if elem.shape == ():  # scalars
                 py_type = float if elem.dtype.name.startswith('float') else int
                 return numpy_type_map[elem.dtype.name](list(map(py_type, batch)))
-        elif isinstance(batch[0][0][0], int):
-            return convert_utts_list_tensor(batch, torch.IntTensor)
-        elif isinstance(batch[0][0][0], float):
-            return convert_utts_list_tensor(batch, torch.FloatTensor)
         elif isinstance(batch[0][0][0], string_classes):
             return batch
 
-    raise TypeError(("batch must contain tensors, numbers, dicts or lists; found {}"
-                 .format(type(batch[0]))))
+    valid_type = {'tensor', 'number', 'dict', 'list'}
+    raise TypeError(("batch must contain {%r}; found {}".format(valid_type, type(batch[0]))))
 
 
 def pin_memory_batch(batch):
@@ -175,14 +195,22 @@ def pin_memory_batch(batch):
 
 
 class HTKDataLoaderIter(object):
-    "Iterates once over the DataLoader's dataset, as specified by the sampler"
-
+    "Iterates once over the DataLoader's dataset"
+    """ Methods:
+            next()
+            normalize()
+    """
     def __init__(self, loader):
+        self.logger = loader.logger
         self.dataset = loader.dataset
         self.batch_size = loader.batch_size
         self.frame_mode = loader.frame_mode
         self.random_size = min(loader.random_size, self.dataset.inputs[0]['total_nframes'])
-        self.epoch_size = min(loader.epoch_size, self.dataset.inputs[0]['total_nframes'])
+        self.epoch_size  = min(loader.epoch_size,  self.dataset.inputs[0]['total_nframes'])
+        self.context_window = [
+            [input['context_window'] for input in self.dataset.inputs],
+            [target['context_window'] for target in self.dataset.targets]
+        ]
 
         self.truncate_size = loader.truncate_size
         self.collate_fn = loader.collate_fn
@@ -190,18 +218,19 @@ class HTKDataLoaderIter(object):
         self.pin_memory = loader.pin_memory
         self.drop_last = loader.drop_last
         self.done_event = threading.Event()
+        self.random_seed = loader.random_seed
+        self.permutation = loader.permutation
+        np.random.seed(self.random_seed)
+        self.all_keys = loader.dataset.all_keys
 
         self.epoch_samples_remaining = self.epoch_size
         self.random_samples_remaining = 0
         self.random_utts_remaining = 0
+        self.utt_iter_idx = loader.utt_iter_idx
 
-        self.random_utt_idx = 0
-        self.max_utt_len = self.dataset.max_utt_len2
-
-        self.all_keys = list(loader.dataset.inputs[0]['name2idx'])
-        self.random_block_keys = None
-
-        self.block_data = self._next_random_block()
+        self.utt_start_index = []
+        self.utt_end_index = []
+        self.random_block_keys = []
 
         '''
         if self.num_workers > 0:
@@ -237,7 +266,7 @@ class HTKDataLoaderIter(object):
                 self._put_indices()
         '''
 
-        print('HTKDataLoaderIterator initialization close.')
+        self.logger.info('HTKDataLoaderIterator initialization close.')
 
 
     def __len__(self):
@@ -250,154 +279,368 @@ class HTKDataLoaderIter(object):
         else:
             return (data_cnt + self.batch_size - 1) // self.batch_size
 
-    def __next__(self):
+
+    def _get_default_tensor(self, data):
+        tmp_data = data
+        while (True):
+            if type(tmp_data)==list:
+                tmp_data = tmp_data[0]
+                continue
+            elif type(tmp_data).__module__ == np.__name__:
+                return numpy_type_map[str(tmp_data.dtype)]
+            elif isinstance(tmp_data, int):
+                return torch.IntTensor
+            elif isinstance(tmp_data, float):
+                return torch.FloatTensor
+            else:
+                raise Exception("DataLoaderIter only support numpy, int and float type.")
+
+
+    def _frame_feature_augmentation(self, data_item, batchidxs, context_window, utt_start_index, utt_end_index):
+        # Context Window is None or = 0
+        if context_window is None or sum(context_window)==0: # MLF have no context
+            return data_item[batchidxs]
+
+        # Context Window > 0
+        left_context  = context_window[0]
+        right_context = context_window[1]
+        context_len = left_context + right_context + 1
+
+        vec_len = data_item[0].shape[0]
+        ret = np.zeros((len(batchidxs),context_len,vec_len), dtype=data_item.dtype)
+        for i, idx in enumerate(batchidxs):
+            left_cnt  = min(left_context, idx-utt_start_index[idx])
+            right_cnt = min(right_context, utt_end_index[idx]-idx)
+            aug_beg = left_context - left_cnt
+            aug_end = left_context + 1 + right_cnt
+            ret[i][aug_beg:aug_end] = np.copy(data_item[idx-left_cnt:idx+right_cnt+1])
+        return ret
+
+
+    def _utterance_feature_augmentation(self, data_item, batchidxs, context_window):
+        # Context Window is None or = 0
+        if context_window is None or sum(context_window)==0: # MLF have no context
+            return data_item[batchidxs].tolist()
+
+        # Context Window > 0
+        left_context  = context_window[0]
+        right_context = context_window[1]
+        context_len = left_context + 1 + right_context
+
+        vec_len = data_item[0].shape[1]
+        ret = []
+        for i, idx in enumerate(batchidxs):
+            utt_len = data_item[idx].shape[0]
+            utt_aug = np.zeros((utt_len,context_len,vec_len), dtype=data_item[idx].dtype)
+            for j in range(utt_len):
+                left_cnt  = min(left_context, j)
+                right_cnt = min(right_context, utt_len-1 - j)
+                aug_beg = left_context - left_cnt
+                aug_end = left_context + 1 + right_cnt
+                utt_aug[j][aug_beg:aug_end] = np.copy(data_item[idx][j-left_cnt:j+right_cnt+1])
+            ret.append(utt_aug)
+        return ret
+
+
+    def _next_batch_frame_mode(self, batch_size):
+
+        def _next_batch_indices(random_block_keys, batch_size):
+            batch_size = min(self.epoch_samples_remaining, batch_size, self.random_samples_remaining)
+            batch_indices = [next(self.perm_indices) for _ in range(batch_size)]
+            self.epoch_samples_remaining -= batch_size
+            self.random_samples_remaining -= batch_size
+            return batch_indices, None, None
+
+        indices, _, _ = _next_batch_indices(self.random_block_keys, batch_size)
+        batch = [[], []]
+        for i, data in enumerate(self.block_data):
+            for j, data_item in enumerate(data):
+                tmp_batch = self._frame_feature_augmentation(data_item, indices, self.context_window[i][j], utt_start_index=self.utt_start_index, utt_end_index=self.utt_end_index)
+                batch[i].append(torch.from_numpy(tmp_batch))
+        return batch, None, None
+
+    def _next_batch_utts_mode(self, batch_size):
+
+        def _next_batch_indices(random_block_keys, batch_size):
+            batch_size = min(self.random_utts_remaining, batch_size)
+            batch_indices = [next(self.perm_indices) for _ in range(batch_size)]
+            batch_lengths = []
+            batch_keys = []
+
+            for i in range(batch_size):
+                key = random_block_keys[batch_indices[i]]
+                key2idx0 = self.dataset.inputs[0]['name2idx'][key]
+                uttLength = self.dataset.inputs[0]['nframes'][key2idx0]
+                batch_lengths.append(uttLength)
+                batch_keys.append(key)
+                self.epoch_samples_remaining  -= uttLength
+                self.random_samples_remaining -= uttLength
+            self.random_utts_remaining -= batch_size
+            return batch_indices, batch_lengths, batch_keys
+
+        indices, lengths, keys = _next_batch_indices(self.random_block_keys, batch_size)
+        sorted_lengths, order = torch.sort(torch.IntTensor(lengths), 0, descending=True)
+        keys  = [keys[i] for i in order]
+        batch = [[], []]
+        for i, data in enumerate(self.block_data):
+            for j, data_item in enumerate(data):
+                tmp_batch = self._utterance_feature_augmentation(data_item, indices, self.context_window[i][j])
+                #batch[i].append(self.collate_fn(tmp_batch, self.frame_mode))
+                defaultTensor = self._get_default_tensor(tmp_batch)
+                batch[i].append(convertUttsList2Tensor(tmp_batch, defaultTensor, lengths)[order])
+        return batch, list(sorted_lengths), keys
+
+    def _next_batch(self):
         if self.num_workers == 0:   # same_process loading
             if self.drop_last and self.epoch_samples_remaining < self.batch_size:
+                self.epoch_samples_remaining = self.epoch_size
                 raise StopIteration
             if self.epoch_samples_remaining <= 0:
                 self.epoch_samples_remaining = self.epoch_size
                 raise StopIteration
-            if self.random_samples_remaining == 0:
-                self.block_data = self._next_random_block()
+            if self.random_samples_remaining == 0:  # Load next block data
+                self._next_random_block()
 
-            indices, lengths = self._next_batch_indices()
-            inputs = [] if self.block_data[0] else None
-            targets = [] if self.block_data[1] else None
-            batch = [inputs, targets]
-            for i in range(len(self.block_data)):
-                if batch[i] is None: continue
-
-                for j in range(len(self.block_data[i])):
-                    tmp_batch = []
-                    for k in indices:
-                        tmp_batch.append(self.block_data[i][j][k])
-
-                    #batch[i].append(self.collate_fn(tmp_batch, self.frame_mode))
-                    tmp_batch1 = tmp_batch
-                    while (True):
-                        if type(tmp_batch1)==list:
-                            tmp_batch1 = tmp_batch1[0]
-                            continue
-                        elif isinstance(tmp_batch1, int):
-                            defaultTensor = torch.IntTensor
-                            break
-                        elif isinstance(tmp_batch1, float):
-                            defaultTensor = torch.FloatTensor
-                            break
-                        else:
-                            raise Exception("DataLoaderIter only support int and float type.")
-
-                    if self.frame_mode:
-                        batch[i].append(defaultTensor(tmp_batch))
-                    else:
-                        batch[i].append(convert_utts_list_tensor(tmp_batch, defaultTensor))
-
+            if self.frame_mode:
+                 batch, lengths, keys = self._next_batch_frame_mode(self.batch_size)
+            else:
+                 batch, lengths, keys = self._next_batch_utts_mode(self.batch_size)
             if self.pin_memory:
                 batch = pin_memory_batch(batch)
-        return batch, lengths
+            return batch, lengths, keys
 
+    __next__ = _next_batch
     next = __next__     # Python 2 compatibility
-
     def __iter__(self):
         return self
 
-    def _next_batch_indices(self):
-        batch_size = min(self.epoch_samples_remaining, self.batch_size) if self.frame_mode else min(self.random_utts_remaining, self.batch_size)
-        batch_indices = [next(self.perm_indices) for _ in range(batch_size)]
-        batch_lengths = []
+
+    def _random_block_keys(self):
+        """Load the next random block keys."""
+        block_keys = []
+        samples_remaining = 0
+        self.utt_start_index = []
+        self.utt_end_index   = []
+        total_nutts = len(self.all_keys)
+
+        def start_end_index_frame_mode(utt_start, utt_len):
+             self.utt_start_index += [utt_start] * utt_len
+             self.utt_end_index   += [utt_start + utt_len - 1] * utt_len
+
+        def start_end_index_utts_mode(utt_start, utt_len):
+             self.utt_start_index.append([0] * utt_len)
+             self.utt_end_index.append([utt_len - 1] * utt_len)
+
         if self.frame_mode:
-            self.epoch_samples_remaining -= batch_size
-            self.random_samples_remaining -= batch_size
+            start_end_index_update = start_end_index_frame_mode
         else:
-            self.random_utts_remaining -= batch_size
-            for i in range(batch_size):
-                key = self.random_block_keys[batch_indices[i]]
-                key2idx0 = self.dataset.inputs[0]['name2idx'][key]
-                uttLength = self.dataset.inputs[0]['nframes'][key2idx0]
-                self.epoch_samples_remaining  -= uttLength
-                self.random_samples_remaining -= uttLength
-                batch_lengths.append(uttLength)
-        return batch_indices, batch_lengths
+            start_end_index_update = start_end_index_utts_mode
+
+        while True:
+            key = self.all_keys[self.utt_iter_idx]
+            key2idx0 = self.dataset.inputs[0]['name2idx'][key]
+            if (samples_remaining + self.dataset.inputs[0]['nframes'][key2idx0]) <= self.random_size:
+                block_keys.append(key)
+                self.utt_iter_idx = (self.utt_iter_idx + 1) % total_nutts
+                utt_len = self.dataset.inputs[0]['nframes'][key2idx0]
+                start_end_index_update(samples_remaining, utt_len)
+                samples_remaining += utt_len
+            else:
+                break
+
+        return block_keys, samples_remaining
 
 
     def _next_random_block(self):
-        """Load the next random block when the current block is drained."""
-        self.random_block_keys = []
-        while True:
-            key = self.all_keys[self.random_utt_idx]
-            key2idx0 = self.dataset.inputs[0]['name2idx'][key]
-            if (self.random_samples_remaining + self.dataset.inputs[0]['nframes'][key2idx0]) <= self.random_size:
-                self.random_block_keys.append(key)
-                self.random_utt_idx = (self.random_utt_idx + 1) % self.dataset.inputs[0]['nUtts']
-                self.random_samples_remaining += self.dataset.inputs[0]['nframes'][key2idx0]
-            else:
-                break
-        data_cnt = self.random_samples_remaining if self.frame_mode else len(self.random_block_keys)
-        self.random_utts_remaining = None if self.frame_mode else data_cnt
+        self.random_block_keys, self.random_samples_remaining = self._random_block_keys()
+        self.block_data = self._get_block_data_from_keys(self.random_block_keys)
+        if self.frame_mode:
+            data_cnt = self.random_samples_remaining
+        else:
+            data_cnt = len(self.random_block_keys)
+            self.random_utts_remaining = data_cnt
+        self.perm_indices = iter(np.random.permutation(data_cnt)) if self.permutation else iter(np.arange(data_cnt))
 
+    def _get_block_data_from_keys(self, block_keys):
         # Read HTK Data of keys list
-        data = [self.dataset.inputs, self.dataset.targets]
-        inputs_block = [] if data[0] else None
-        targets_block = [] if data[1] else None
-        block_data = [inputs_block, targets_block]
-        for i in range(len(block_data)):
-            if block_data[i] is None: continue
+        dataset = [self.dataset.inputs, self.dataset.targets]
+        data_block = [[], []]
 
-            for j in range(len(data[i])):
-                if data[i][j]['data_type'] == 'SCP':
-                    tmp_block_data = self._get_SCP_block(data[i][j])
-                elif data[i][j]['data_type'] == 'MLF':
-                    tmp_block_data = self._get_MLF_block(data[i][j])
-                block_data[i].append(tmp_block_data)
-
-        #self.perm_indices = iter(torch.randperm(data_cnt).long()) if data_cnt > 0 else None
-        self.perm_indices = iter(torch.randperm(data_cnt).long())
-        return block_data
+        for i, data in enumerate(dataset):
+            for item in data:
+                if item['data_type'] == 'SCP':
+                    tmp_data_block = self._get_SCP_block(item, block_keys, frame_mode=self.frame_mode)
+                elif item['data_type'] == 'MLF':
+                    tmp_data_block = self._get_MLF_block(item, block_keys, frame_mode=self.frame_mode)
+                data_block[i].append(tmp_data_block)
+        return data_block
 
 
-    def _get_SCP_block(self, subdataset):
+    def _get_SCP_block(self, subdataset, block_keys, frame_mode):
         # Read the HTK feats of a list in a random block
-        # :params: subdataset: one input or target in SCP format
-        random_block_data = []
+        block_data = []
         dimension = subdataset['dim']
 
-        for i in range(len(self.random_block_keys)):
-            key = self.random_block_keys[i]
+        for key in block_keys:
             key2idx0 = subdataset['name2idx'][key]
             feat_path = subdataset['data'][key2idx0]
             feat_start = subdataset['start_f'][key2idx0]
             feat_len = subdataset['nframes'][key2idx0]
 
             htk_reader = HTKFeat_read(feat_path)
-            tmp_data = htk_reader.getsegment(feat_start, feat_start+feat_len-1)
-            if (tmp_data.shape[1] != dimension):
-                raise Exception("Dimension does not match, %d in configure vs. %d in data" % (dimension, tmp_data.shape[1]))
+            htk_data = htk_reader.getsegment(feat_start, feat_start+feat_len-1)
+            if (htk_data.shape[1] != dimension):
+                raise Exception("Dimension does not match, %d in configure vs. %d in data" % (dimension, htk_data.shape[1]))
             htk_reader.close()
+            block_data.append(htk_data)
 
-            tmp_data = tmp_data.tolist()
-
-            if self.frame_mode:
-                random_block_data += tmp_data
-            else:
-                random_block_data.append(tmp_data)
-        return random_block_data
+        if frame_mode:
+            return np.concatenate(block_data, axis=0)
+        else:
+            return np.array(block_data)
 
 
-    def _get_MLF_block(self, subdataset):
+    def _get_MLF_block(self, subdataset, block_keys, frame_mode):
         # Read the HTK feats of a list in a random block
         # :params: subdataset: one input or target in MLF format
-        random_block_data = []
+        block_data = []
+        if frame_mode:
+            append_data = lambda mlf_data: block_data.extend(mlf_data)
+        else:
+            append_data = lambda mlf_data: block_data.append(mlf_data)
 
-        for i in range(len(self.random_block_keys)):
-            key = self.random_block_keys[i]
+        for key in block_keys:
             key2idx0 = subdataset['name2idx'][key]
-            tmp_data = subdataset['data'][key2idx0]
+            append_data(subdataset['data'][key2idx0])
+        return np.array(block_data)
 
-            if self.frame_mode:
-                random_block_data += tmp_data
-            else:
-                random_block_data.append(tmp_data)
-        return random_block_data
+
+    def normalize(self, mode=None):
+        """ return mean_data, std_data
+        """
+        mean_data_block = [[None] * len(self.dataset.inputs),
+                           [None] * len(self.dataset.targets)]
+        std_data_block  = [[None] * len(self.dataset.inputs),
+                           [None] * len(self.dataset.targets)]
+
+        valid_mode = {None, 'globalMean', 'globalVar', 'globalMeanVar'}
+        if mode not in valid_mode:
+            raise ValueError("normalization must be one of %r" % valid_mode)
+
+        def _get_block_keys():
+            step = int(len(self.all_keys) // (self.dataset.inputs[0]['total_nframes'] // self.random_size + 1))
+            for i in range(0, len(self.all_keys), step):
+                block_keys = self.all_keys[i:i+step]
+                nsamples = 0
+                for key in block_keys:
+                    key2idx0 = self.dataset.inputs[0]['name2idx'][key]
+                    nsamples += self.dataset.inputs[0]['nframes'][key2idx0]
+                yield block_keys, nsamples
+
+        def initialize(params):
+            for data_idx, data in enumerate(dataset):
+                for item_idx, item in enumerate(data):
+                    if item['data_type'] == 'SCP':
+                        params[data_idx][item_idx] = np.zeros(item['dim'])
+
+        def Mean():
+            self.logger.info("DataLoaderIterator: Normalization -- means")
+            initialize(mean_data_block)
+
+            for block_keys, nsamples in _get_block_keys():
+                for data_idx, mean_data in enumerate(mean_data_block):
+                    for block_idx, mean_block in enumerate(mean_data):
+                        if mean_block is None: continue
+
+                        total_nframes = dataset[data_idx][block_idx]['total_nframes']
+                        block = self._get_SCP_block(dataset[data_idx][block_idx], block_keys, frame_mode=True)
+                        mean_data_block[data_idx][block_idx] += np.mean(block, axis=0) * (nsamples / total_nframes)
+
+            return mean_data_block
+
+        def Std():
+            self.logger.info("DataLoaderIterator: Normalization -- standard variance")
+            initialize(std_data_block)
+
+            for block_keys, nsamples in _get_block_keys():
+                for data_idx, std_data in enumerate(std_data_block):
+                    for block_idx, std_block in enumerate(std_data):
+                        if std_block is None: continue
+
+                        total_nframes = dataset[data_idx][block_idx]['total_nframes']
+                        block = self._get_SCP_block(dataset[data_idx][block_idx], block_keys, frame_mode=True)
+                        std_data_block[data_idx][block_idx] += np.var(block-mean_data_block[data_idx][block_idx], axis=0) * (nsamples / total_nframes)
+
+            # Sqrt
+            for data_idx, std_data in enumerate(std_data_block):
+                for block_idx, std_block in enumerate(std_data):
+                    if not std_block is None:
+                        std_data_block[data_idx][block_idx] = np.sqrt(std_block)
+            return std_data_block
+
+        def MeanStd():
+            self.logger.info("DataLoaderIterator: Normalization -- mean & standard variance")
+            initialize(mean_data_block)
+            initialize(std_data_block)
+
+            for block_keys, nsamples in _get_block_keys():
+                for data_idx, std_data in enumerate(std_data_block):
+                    for block_idx, std_block in enumerate(std_data):
+                        if std_block is None: continue
+
+                        total_nframes = dataset[data_idx][block_idx]['total_nframes']
+                        block = self._get_SCP_block(dataset[data_idx][block_idx], block_keys, frame_mode=False)
+                        mean_data_block[data_idx][block_idx] += np.mean(block, axis=0) * (nsamples / total_nframes)
+                        std_data_block[data_idx][block_idx] += np.var(block-mean_data_block[data_idx][block_idx], axis=0) * (nsamples / total_nframes)
+            # Sqrt
+            for data_idx, std_data in enumerate(std_data_block):
+                for block_idx, std_block in enumerate(std_data):
+                    if not std_block is None:
+                        std_data_block[data_idx][block_idx] = np.sqrt(std_block)
+            return std_data_block
+
+        if mode is None:
+            return mean_data_block, std_data_block
+
+        dataset = [self.dataset.inputs, self.dataset.targets]
+        mean_data_block = Mean()
+        if mode != 'globalMean': std_data_block = Std()
+
+        return mean_data_block, std_data_block
+
+
+    def eval(self):
+        for key in self.all_keys:
+            batch_data = self._get_block_data_from_keys([key])
+            length = self.dataset.inputs[0]['nframes'][ self.dataset.inputs[0]['name2idx'][key] ]
+            batch = [[] if batch_data[0] else None,
+                     [] if batch_data[1] else None ]
+            for i, data in enumerate(batch_data):
+                if data is None: continue
+                for j, data_item in enumerate(data):
+                    tmp_batch = self._utterance_feature_augmentation(data_item, [0], self.context_window[i][j])
+                    defaultTensor = self._get_default_tensor(tmp_batch)
+                    batch[i].append(convertUttsList2Tensor(tmp_batch, defaultTensor, [length])[0])
+            yield batch, length, key
+
+
+    def eval_multi_utts(self, batch_size=2):
+        for i in range(0, len(self.all_keys), batch_size):
+            batch_keys = self.all_keys[i:i+batch_size]
+            batch_data = self._get_block_data_from_keys(batch_keys)
+            batch_idxs = [i for i in range(len(batch_keys))]
+            lengths = [ self.dataset.inputs[0]['nframes'][ self.dataset.inputs[0]['name2idx'][key] ] for key in batch_keys ]
+            sorted_lengths, order = torch.sort(torch.IntTensor(lengths), 0, descending=True)
+            batch = [[] if batch_data[0] else None,
+                     [] if batch_data[1] else None ]
+            for i, data in enumerate(self.batch_data):
+                if data is None: continue
+                for j, data_item in enumerate(data):
+                    tmp_batch = self._utterance_feature_augmentation(data_item, batch_idxs, self.context_window[i][j])
+                    defaultTensor = self._get_default_tensor(tmp_batch)
+                    batch[i].append(convertUttsList2Tensor(tmp_batch, defaultTensor, lengths)[order])
+            yield batch, list(sorted_lengths), batch_keys
+
 
     '''
     def _put_indices(self):
@@ -423,7 +666,7 @@ class HTKDataLoaderIter(object):
 
 class HTKDataLoader(DataLoader):
     """
-     HTK Data loader. Combines a dataset and a sampler, and provides
+     HTK Data loader. Combines a dataset and provides
      single- or multi-process iterators over the dataset.
      Arguments:
          dataset (Dataset): dataset from which to load the data.
@@ -434,30 +677,39 @@ class HTKDataLoader(DataLoader):
             (default: 0)
          collate_fn (callable, optional)
          pin_memory (bool, optional)
-         drop_last (bool, optional): set to ``True`` to drop the last incomplete batch,
-            if the dataset size is not divisible by the batch size. If False and
-            the size of dataset is not divisible by the batch size, then the last batch
-            will be smaller. (default: False)
+         drop_last (bool, optional): set to ``True`` to drop the last incomplete batch, if the dataset size is not divisible by the batch size. If False and the size of dataset is not divisible by the batch size, then the last batch will be smaller. (default: False)
          frame_mode(bool, optional): set to ``False`` to enable (utterance) sequence
+         permutation(bool, optional): whether permutate the indices in the iterator
          random_size(int, optional): defines the number of frames to load for once
          epoch_size(int, optional): defines the number of frames for each epoch
          truncate_size(int, optional): defines the truncate length in RNN
+         utt_iter_idx(int, optional): defines the beginning utterance index to be loaded
+         random_seed(int, optional): defines the random seed
     """
     def __init__(self, dataset, batch_size=1, num_workers=0,
                  collate_fn=default_collate, pin_memory=False, drop_last=False,
-                 frame_mode=False, random_size=None, epoch_size=None, truncate_size=0):
+                 frame_mode=False, permutation=True, random_size=None,
+                 epoch_size=None, truncate_size=0, utt_iter_idx=0,
+                 random_seed=19931225, logger=None):
+        logging.basicConfig(format='[%(name)s] %(levelname)s %(asctime)s: %(message)s', datefmt="%m-%d %H:%M:%S", level=logging.DEBUG)
+        self.logger = logger if logger else logging.getLogger('HTKDataLoader')
+
         self.dataset = dataset
         self.num_workers = num_workers
         self.collate_fn = collate_fn
         self.pin_memory = pin_memory
         self.drop_last  = drop_last
-
         self.frame_mode  = frame_mode
+        self.utt_iter_idx = utt_iter_idx
+        self.random_seed = random_seed
+        self.permutation = permutation
+
         self.batch_size  = batch_size
         self.random_size = random_size if random_size else self.dataset.inputs[0]['total_nframes']
         self.epoch_size  = epoch_size if epoch_size else self.random_size
         self.truncate_size = truncate_size
-        print('HTKDataLoader initialization close.')
+
+        self.logger.info('HTKDataLoader initialization close.')
 
 
     def __iter__(self):
