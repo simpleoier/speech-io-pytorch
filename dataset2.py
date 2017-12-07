@@ -16,7 +16,6 @@ import threading
 import traceback
 import numpy as np
 from HTK_IO import HTKFeat_read, HTKFeat_write
-from Kaldi_IO import read_ali_ark, write_vec_int, read_vec_flt_ark, write_vec_flt, read_mat_scp, write_mat
 if sys.version_info[0] == 2:
     import Queue as queue
     string_classes = basestring
