@@ -453,7 +453,7 @@ class HTKDataLoaderIter(object):
 
     def _next_random_block(self):
         self.random_block_keys, self.random_samples_remaining = self._random_block_keys()
-        self.block_data = self._get_block_data_from_keys(self.random_block_keys)
+        self.block_data = self._get_block_data_from_keys(self.random_block_keys, frame_mode=self.frame_mode)
         if self.frame_mode:
             data_cnt = self.random_samples_remaining
         else:
@@ -461,7 +461,7 @@ class HTKDataLoaderIter(object):
             self.random_utts_remaining = data_cnt
         self.perm_indices = iter(np.random.permutation(data_cnt)) if self.permutation else iter(np.arange(data_cnt))
 
-    def _get_block_data_from_keys(self, block_keys):
+    def _get_block_data_from_keys(self, block_keys, frame_mode):
         # Read HTK Data of keys list
         dataset = [self.dataset.inputs, self.dataset.targets]
         data_block = [[], []]
@@ -469,9 +469,9 @@ class HTKDataLoaderIter(object):
         for i, data in enumerate(dataset):
             for item in data:
                 if item['data_type'] == 'SCP':
-                    tmp_data_block = self._get_SCP_block(item, block_keys, frame_mode=self.frame_mode)
+                    tmp_data_block = self._get_SCP_block(item, block_keys, frame_mode=frame_mode)
                 elif item['data_type'] == 'MLF':
-                    tmp_data_block = self._get_MLF_block(item, block_keys, frame_mode=self.frame_mode)
+                    tmp_data_block = self._get_MLF_block(item, block_keys, frame_mode=frame_mode)
                 data_block[i].append(tmp_data_block)
         return data_block
 
@@ -629,12 +629,10 @@ class HTKDataLoaderIter(object):
 
     def eval(self):
         for key in self.all_keys:
-            batch_data = self._get_block_data_from_keys([key])
+            batch_data = self._get_block_data_from_keys([key], frame_mode=False)
             length = self.dataset.inputs[0]['nframes'][ self.dataset.inputs[0]['name2idx'][key] ]
-            batch = [[] if batch_data[0] else None,
-                     [] if batch_data[1] else None ]
+            batch = [[], []]
             for i, data in enumerate(batch_data):
-                if data is None: continue
                 for j, data_item in enumerate(data):
                     tmp_batch = self._utterance_feature_augmentation(data_item, [0], self.context_window[i][j])
                     defaultTensor = self._get_default_tensor(tmp_batch)
@@ -645,14 +643,12 @@ class HTKDataLoaderIter(object):
     def eval_multi_utts(self, batch_size=2):
         for i in range(0, len(self.all_keys), batch_size):
             batch_keys = self.all_keys[i:i+batch_size]
-            batch_data = self._get_block_data_from_keys(batch_keys)
+            batch_data = self._get_block_data_from_keys(batch_keys, frame_mode=False)
             batch_idxs = [i for i in range(len(batch_keys))]
             lengths = [ self.dataset.inputs[0]['nframes'][ self.dataset.inputs[0]['name2idx'][key] ] for key in batch_keys ]
             sorted_lengths, order = torch.sort(torch.IntTensor(lengths), 0, descending=True)
-            batch = [[] if batch_data[0] else None,
-                     [] if batch_data[1] else None ]
-            for i, data in enumerate(self.batch_data):
-                if data is None: continue
+            batch = [[], []]
+            for i, data in enumerate(batch_data):
                 for j, data_item in enumerate(data):
                     tmp_batch = self._utterance_feature_augmentation(data_item, batch_idxs, self.context_window[i][j])
                     defaultTensor = self._get_default_tensor(tmp_batch)
