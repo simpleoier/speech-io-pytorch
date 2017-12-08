@@ -515,6 +515,24 @@ class HTKDataLoaderIter(object):
         return np.array(block_data)
 
 
+    def priors(self):
+        """ return prior for MLF."""
+        self.logger.info("DataLoaderIterator: Priors")
+        priors = [[None] * len(self.dataset.inputs),
+                 [None] * len(self.dataset.targets)]
+        dataset = [self.dataset.inputs, self.dataset.targets]
+        # initialization
+        for data_idx, data in enumerate(dataset):
+            for item_idx, item in enumerate(data):
+                if item['data_type'] != 'MLF': continue
+                prior_item = np.ones(dataset[data_idx][item_idx]['dim'])
+                for key in self.all_keys:
+                    key2idx0 = dataset[data_idx][item_idx]['name2idx'][key]
+                    prior_item[dataset[data_idx][item_idx]['data'][key2idx0]] += 1
+                priors[data_idx][item_idx] = prior_item / (dataset[data_idx][item_idx]['total_nframes'] + dataset[data_idx][item_idx]['dim'])
+        return priors
+
+
     def normalize(self, mode=None):
         """ return mean_data, std_data
         """
@@ -620,8 +638,8 @@ class HTKDataLoaderIter(object):
                 for j, data_item in enumerate(data):
                     tmp_batch = self._utterance_feature_augmentation(data_item, [0], self.context_window[i][j])
                     defaultTensor = self._get_default_tensor(tmp_batch)
-                    batch[i].append(convertUttsList2Tensor(tmp_batch, defaultTensor, [length])[0])
-            yield batch, length, key
+                    batch[i].append(convertUttsList2Tensor(tmp_batch, defaultTensor, [length]))
+            yield batch, [length], [key]
 
 
     def eval_multi_utts(self, batch_size=2):

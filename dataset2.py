@@ -269,8 +269,7 @@ class HTKDataset(object):
                         raise Exception("An error occur while reading SCP file(%s), code:%d, File Format Error: missing labels for %s" % (mlf_file_name, 2, lab_name))
 
                     lab_length = end_pos
-                    for i in range(start_pos, end_pos):
-                        labels[-1].append(label_item)
+                    labels[-1].extend([label_item]*(end_pos - start_pos))
                 elif (re.match('^\.$', line)):      # End of current label
                     lab_complete = True
                     if (self.max_utt_len > 0 and delete_toolong and lab_length > self.max_utt_len):
