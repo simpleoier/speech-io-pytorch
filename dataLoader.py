@@ -120,9 +120,11 @@ def convertUttsList2Tensor(data, tensor, uttsLength, padding_value=0):
 
     for data_idx, data_item in enumerate(data):
         if type(data_item).__module__ == np.__name__:   # List of numpy ndarray
-            dataTensor[data_idx][0:uttsLength[data_idx]].copy_(torch.from_numpy(data_item))
+            #dataTensor[data_idx][0:uttsLength[data_idx]].copy_(torch.from_numpy(data_item))
+            dataTensor[data_idx][0:data_item.shape[0]].copy_(torch.from_numpy(data_item))
         else:   # ``List'' type in python
-            dataTensor[data_idx][0:uttsLength[data_idx]].copy_(tensor(data_item))
+            #dataTensor[data_idx][0:uttsLength[data_idx]].copy_(tensor(data_item))
+            dataTensor[data_idx][0:len(data_item)].copy_(tensor(data_item))
     return dataTensor
 
 
