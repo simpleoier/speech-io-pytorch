@@ -24,7 +24,9 @@ if __name__ == '__main__':
     dataset = Dataset(feature_config_parms=feat_config_solo, target_config_parms=target_configs, verify_length=False)
     dataloaderIter = iter(DataLoader(dataset, batch_size=4, frame_mode=False))
 
-    for batch_cnt, (batch, lengths, keys) in enumerate(dataloaderIter):
-        print(batch_cnt)
-        print(lengths, keys)
-        print(batch)
+    for batch_cnt, (batch, standard_lengths, keys, lengths) in enumerate(dataloaderIter):
+        #print(batch_cnt)
+        #print(standard_lengths, keys)
+        #print(lengths)
+        #print(batch[1]) # JSON
+        exit()

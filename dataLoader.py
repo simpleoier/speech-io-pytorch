@@ -96,7 +96,7 @@ numpy_type_map = {
 }
 
 
-def convertUttsList2Tensor(data, tensor, uttsLength, padding_value=0):
+def convertUttsList2Tensor(data, tensor, uttsLengths, padding_value=0):
     "Convert data[batch_size][uttLen]([context_window])[vec_len] to a tensor."
     dim_cnt = 2
     ctx_len = 1 # Context Window Length
@@ -114,7 +114,7 @@ def convertUttsList2Tensor(data, tensor, uttsLength, padding_value=0):
             vec_len = len(subdata)
             subdata = subdata[0]
 
-    maxLen = max(uttsLength)
+    maxLen = max(uttsLengths)
     if (dim_cnt == 3):  # Context Window = 0
         ctx_len = 1
     dataTensor = tensor(len(data), maxLen, ctx_len, vec_len).fill_(padding_value)
@@ -123,10 +123,10 @@ def convertUttsList2Tensor(data, tensor, uttsLength, padding_value=0):
 
     for data_idx, data_item in enumerate(data):
         if type(data_item).__module__ == np.__name__:   # List of numpy ndarray
-            #dataTensor[data_idx][0:uttsLength[data_idx]].copy_(torch.from_numpy(data_item))
+            #dataTensor[data_idx][0:uttsLengths[data_idx]].copy_(torch.from_numpy(data_item))
             dataTensor[data_idx][0:data_item.shape[0]].copy_(torch.from_numpy(data_item))
         else:   # ``List'' type in python
-            #dataTensor[data_idx][0:uttsLength[data_idx]].copy_(tensor(data_item))
+            #dataTensor[data_idx][0:uttsLengths[data_idx]].copy_(tensor(data_item))
             dataTensor[data_idx][0:len(data_item)].copy_(tensor(data_item))
     return dataTensor
 
@@ -331,7 +331,7 @@ class DataLoaderIter(object):
     def _utterance_feature_augmentation(self, data_item, batchidxs, context_window):
         # Context Window is None or = 0
         if context_window is None or sum(context_window)==0: # MLF have no context
-            return data_item[batchidxs].tolist()
+            return data_item[batchidxs].tolist(), [len(data_item[idx]) for idx in batchidxs]
 
         # Context Window > 0
         left_context  = context_window[0]
@@ -340,8 +340,10 @@ class DataLoaderIter(object):
 
         vec_len = data_item[0].shape[1]
         ret = []
+        ret_lengths = []
         for i, idx in enumerate(batchidxs):
             utt_len = data_item[idx].shape[0]
+            ret_lengths.append(utt_len)
             utt_aug = np.zeros((utt_len,context_len,vec_len), dtype=data_item[idx].dtype)
             for j in range(utt_len):
                 left_cnt  = min(left_context, j)
@@ -350,7 +352,7 @@ class DataLoaderIter(object):
                 aug_end = left_context + 1 + right_cnt
                 utt_aug[j][aug_beg:aug_end] = np.copy(data_item[idx][j-left_cnt:j+right_cnt+1])
             ret.append(utt_aug)
-        return ret
+        return ret, ret_lengths
 
 
     def _next_batch_frame_mode(self, batch_size):
@@ -368,38 +370,40 @@ class DataLoaderIter(object):
             for j, data_item in enumerate(data):
                 tmp_batch = self._frame_feature_augmentation(data_item, indices, self.context_window[i][j], utt_start_index=self.utt_start_index, utt_end_index=self.utt_end_index)
                 batch[i].append(torch.from_numpy(tmp_batch))
-        return batch, None, None
+        return batch, None, None, None
 
     def _next_batch_utts_mode(self, batch_size):
 
         def _next_batch_indices(random_block_keys, batch_size):
             batch_size = min(self.random_utts_remaining, batch_size)
             batch_indices = [next(self.perm_indices) for _ in range(batch_size)]
-            batch_lengths = []
+            batch_standard_lengths = []
             batch_keys = []
 
             for i in range(batch_size):
                 key = random_block_keys[batch_indices[i]]
                 key2idx0 = self.dataset.features[0]['name2idx'][key]
                 uttLength = self.dataset.features[0]['nframes'][key2idx0]
-                batch_lengths.append(uttLength)
+                batch_standard_lengths.append(uttLength)
                 batch_keys.append(key)
                 self.epoch_samples_remaining  -= uttLength
                 self.random_samples_remaining -= uttLength
             self.random_utts_remaining -= batch_size
-            return batch_indices, batch_lengths, batch_keys
+            return batch_indices, batch_standard_lengths, batch_keys
 
-        indices, lengths, keys = _next_batch_indices(self.random_block_keys, batch_size)
-        sorted_lengths, order = torch.sort(torch.IntTensor(lengths), 0, descending=True)
+        indices, standard_lengths, keys = _next_batch_indices(self.random_block_keys, batch_size)
+        sorted_standard_lengths, order = torch.sort(torch.IntTensor(standard_lengths), 0, descending=True)
         keys  = [keys[i] for i in order]
         batch = [[], []]
+        batch_lengths = [[], []]
         for i, data in enumerate(self.block_data):
             for j, data_item in enumerate(data):
-                tmp_batch = self._utterance_feature_augmentation(data_item, indices, self.context_window[i][j])
+                tmp_batch, tmp_batch_lengths = self._utterance_feature_augmentation(data_item, indices, self.context_window[i][j])
                 #batch[i].append(self.collate_fn(tmp_batch, self.frame_mode))
                 defaultTensor = self._get_default_tensor(tmp_batch)
-                batch[i].append(convertUttsList2Tensor(tmp_batch, defaultTensor, lengths, padding_value=self.padding_value)[order])
-        return batch, list(sorted_lengths), keys
+                batch[i].append(convertUttsList2Tensor(tmp_batch, defaultTensor, tmp_batch_lengths, padding_value=self.padding_value)[order])
+                batch_lengths[i].append([tmp_batch_lengths[m] for m in order])
+        return batch, list(sorted_standard_lengths), keys, batch_lengths
 
     def _next_batch(self):
         if self.num_workers == 0:   # same_process loading
@@ -417,12 +421,12 @@ class DataLoaderIter(object):
                 self.perm_indices = iter(np.random.permutation(data_cnt)) if self.permutation else iter(np.arange(data_cnt))
 
             if self.frame_mode:
-                 batch, lengths, keys = self._next_batch_frame_mode(self.batch_size)
+                 batch, standard_lengths, keys, lengths = self._next_batch_frame_mode(self.batch_size)
             else:
-                 batch, lengths, keys = self._next_batch_utts_mode(self.batch_size)
+                 batch, standard_lengths, keys, lengths = self._next_batch_utts_mode(self.batch_size)
             if self.pin_memory:
                 batch = pin_memory_batch(batch)
-            return batch, lengths, keys
+            return batch, standard_lengths, keys, lengths
         else:
             raise Exception("NotImplementedError: multi-worker data loader iterator is not implemented.")
 
@@ -483,15 +487,17 @@ class DataLoaderIter(object):
         for i, data in enumerate(dataset):
             for item in data:
                 if item['data_type'] == 'SCP':
-                    tmp_data_block = self._get_SCP_block(item, block_keys, frame_mode=frame_mode)
+                    tmp_data_block = self._get_SCP_block(item, block_keys, frame_mode)
                 elif item['data_type'] == 'MLF':
-                    tmp_data_block = self._get_MLF_block(item, block_keys, frame_mode=frame_mode)
+                    tmp_data_block = self._get_MLF_block(item, block_keys, frame_mode)
+                elif item['data_type'] == 'JSON':
+                    tmp_data_block = self._get_JSON_block(item, block_keys, frame_mode)
                 data_block[i].append(tmp_data_block)
         return data_block
 
 
     def _get_HTK_SCP_block(self, subdataset, block_keys, frame_mode):
-        # Read the HTK feats of a list in a random block
+        # Read the HTK feats according to a list of keys and store them in a random block
         block_data = []
         dimension = subdataset['dim']
 
@@ -514,7 +520,7 @@ class DataLoaderIter(object):
             return np.array(block_data)
 
     def _get_Kaldi_SCP_block(self, subdataset, block_keys, frame_mode):
-        # Read the Kaldi feats of a list in a random block
+        # Read the Kaldi feats according to a list of keys and store them in a random block
         block_data = []
         dimension = subdataset['dim']
 
@@ -524,7 +530,7 @@ class DataLoaderIter(object):
 
             kaldi_data = read_mat(feat_path)
             if (kaldi_data.shape[1] != dimension):
-                raise Exception("Kaldi SCP Block: dimension does not match, %d in configure vs. %d in data" % (dimension, htk_data.shape[1]))
+                raise Exception("Kaldi SCP Block: dimension does not match, %d in configure vs. %d in data" % (dimension, kaldi_data.shape[1]))
             block_data.append(kaldi_data)
 
         if frame_mode:
@@ -534,13 +540,27 @@ class DataLoaderIter(object):
 
 
     def _get_MLF_block(self, subdataset, block_keys, frame_mode):
-        # Read the MLF feats of a list in a random block
+        # Read the MLF feats according to a list of keys and store them in a random block
         # :params: subdataset: one input or target in MLF format
         block_data = []
         if frame_mode:
             append_data = lambda mlf_data: block_data.extend(mlf_data)
         else:
             append_data = lambda mlf_data: block_data.append(mlf_data)
+
+        for key in block_keys:
+            key2idx0 = subdataset['name2idx'][key]
+            append_data(subdataset['data'][key2idx0])
+        return np.array(block_data)
+
+
+    def _get_JSON_block(self, subdataset, block_keys, frame_mode):
+        # Read the JSON data according to a list of keys and store them in a random block
+        block_data = []
+        if frame_mode:
+            append_data = lambda json_data: block_data.extend(json_data)
+        else:
+            append_data = lambda json_data: block_data.append(json_data)
 
         for key in block_keys:
             key2idx0 = subdataset['name2idx'][key]

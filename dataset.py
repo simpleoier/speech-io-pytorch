@@ -147,11 +147,11 @@ class Dataset(object):
 
             file_name = config['file_name']
 
-            if data_item['data_type'] == "MLF":
+            if data_item['data_type'] == "SCP":
+                self._read_SCP(file_name, data_item)
+            elif data_item['data_type'] == "MLF":
                 data_item['type'] = config['label_type']
                 self._read_MLF(file_name, config, data_item)
-            elif data_item['data_type'] == "SCP":
-                self._read_SCP(file_name, data_item)
             elif data_item['data_type'] == 'JSON':
                 self._read_JSON(file_name, config, data_item)
 
@@ -419,7 +419,8 @@ class Dataset(object):
 
             utts = list(json_file.keys())
             for i, utt in enumerate(utts):
-                labels.append(json_file[utt]['targetid'])
+                tgt_string_list = json_file[utt]['targetid'].split(' ')
+                labels.append([int(tgt) for tgt in tgt_string_list])
                 name2idx[utt] = i
                 lab_nframes.append(int(json_file[utt]['olen']))
             return (labels, name2idx, lab_nframes)
