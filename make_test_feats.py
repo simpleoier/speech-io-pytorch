@@ -1,19 +1,12 @@
-#!/home/xkc09/Documents/xkc09/src/anaconda3/envs/common-py35/bin/python
+#!/usr/bin/env python
 # encoding: utf-8
 
-from HTK_IO import HTKFeat_write, FBANK, _O
 import numpy as np
 from os import path
 
-np.random.seed(19931225)
-datadir = '../test_data'
-file_name_prefix = 'artificial_feats'
-file_num = 1000
-file_len = np.random.randint(100, high=250, size=file_num)
-print(file_len)
-
 # Features
-if True:
+from HTK_IO import HTKFeat_write, FBANK, _O
+def generate_features():
     index = -1
     dim = 40
     for i in range(file_num):
@@ -26,16 +19,16 @@ if True:
         writer.writeall(tmp_feat)
 
 # SCP
-if True:
+def generate_scp():
     index = -1
     scp_file_name = path.join(datadir, 'feat.scp')
     scp_file = open(scp_file_name, 'w')
     for i in range(file_num):
-        scp_file.write("{0}.feat=/home/xkc09/Documents/xkc09/program/kaldi-io/test_data/{0}.feat[0,{1}]\n".format(file_name_prefix+str(i), file_len[i]-1))
+        scp_file.write("{0}.feat={1}/{0}.feat[0,{2}]\n".format(file_name_prefix+str(i), datadir, file_len[i]-1))
     scp_file.close()
 
 # MLF
-if True:
+def generate_mlf():
     index = -1
     mlf_file_name = path.join(datadir, "label.mlf")
     mlf_file = open(mlf_file_name, 'w')
@@ -54,3 +47,33 @@ if True:
     for i in range(index):
         mapping_file.write("%d\n"%i)
     mapping_file.close()
+
+# JSON
+import json
+def generate_json():
+    utts_json = {}
+    for i in range(file_num):
+        # randomly generate data
+        olen = np.random.randint(low=5, high=10)
+        targetids = np.random.randint(low=0, high=51, size=olen).tolist()
+        targetids = ' '.join([str(x) for x in targetids])
+        utt_name = file_name_prefix + str(i)
+        utts_json[utt_name] = {'olen': str(olen), 'targetid': targetids}
+    data_json = {'utts': utts_json}
+    json_file_name = path.join(datadir, 'data.json')
+    json_string = json.dumps(data_json, indent=4, ensure_ascii=False)
+    with open(json_file_name, 'w') as f:
+        f.write(json_string)
+
+if __name__ == "__main__":
+    np.random.seed(19931225)
+    datadir = path.join(path.dirname(path.dirname(path.realpath(__file__))), 'test_data') #'../test_data'
+    file_name_prefix = 'artificial_feats'
+    file_num = 10
+    file_len = np.random.randint(100, high=250, size=file_num)
+    #print(file_len)
+
+    generate_features()
+    generate_scp()
+    generate_mlf()
+    generate_json()

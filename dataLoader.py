@@ -18,7 +18,7 @@ import traceback
 import numpy as np
 import tqdm
 from HTK_IO import HTKFeat_read, HTKFeat_write
-sys.path.append('/slfs1/users/xkc09/program/kaldi-io-pytorch/kaldi-io-for-python')
+sys.path.append('./kaldi-io-for-python')
 from kaldi_io import read_mat
 if sys.version_info[0] == 2:
     import Queue as queue
@@ -30,6 +30,9 @@ else:
 
 _use_shared_memory = False
 """Whether to use shared memory in default_collate"""
+
+logging.basicConfig(format='[%(name)s] %(levelname)s %(asctime)s: %(message)s', datefmt="%m-%d %H:%M:%S", level=logging.DEBUG)
+
 
 
 class ExceptionWrapper(object):
@@ -199,40 +202,42 @@ def pin_memory_batch(batch):
         return batch
 
 
-class HTKDataLoaderIter(object):
+class DataLoaderIter(object):
     "Iterates once over the DataLoader's dataset"
     """ Methods:
             next()
             normalize()
     """
-    def __init__(self, loader):
-        self.logger = loader.logger
-        self.dataset = loader.dataset
-        self.batch_size = loader.batch_size
-        self.frame_mode = loader.frame_mode
-        self.padding_value = loader.padding_value
-        self.random_size = min(loader.random_size, self.dataset.inputs[0]['total_nframes'])
-        self.epoch_size  = min(loader.epoch_size,  self.dataset.inputs[0]['total_nframes'])
+    def __init__(self, dataloader):
+        self.logger = dataloader.logger
+        self.logger.info('DataLoaderIterator initialization close.')
+
+        self.dataset = dataloader.dataset
+        self.batch_size = dataloader.batch_size
+        self.frame_mode = dataloader.frame_mode
+        self.padding_value = dataloader.padding_value
+        self.random_size = min(dataloader.random_size, self.dataset.inputs[0]['total_nframes'])
+        self.epoch_size  = min(dataloader.epoch_size,  self.dataset.inputs[0]['total_nframes'])
         self.context_window = [
-            [input['context_window'] for input in self.dataset.inputs],
+            [feature['context_window'] for feature in self.dataset.features],
             [target['context_window'] for target in self.dataset.targets]
         ]
 
-        self.truncate_size = loader.truncate_size
-        self.collate_fn = loader.collate_fn
-        self.num_workers = loader.num_workers
-        self.pin_memory = loader.pin_memory
-        self.drop_last = loader.drop_last
+        self.truncate_size = dataloader.truncate_size
+        self.collate_fn = dataloader.collate_fn
+        self.num_workers = dataloader.num_workers
+        self.pin_memory = dataloader.pin_memory
+        self.drop_last = dataloader.drop_last
         self.done_event = threading.Event()
-        self.random_seed = loader.random_seed
-        self.permutation = loader.permutation
+        self.random_seed = dataloader.random_seed
+        self.permutation = dataloader.permutation
         np.random.seed(self.random_seed)
-        self.all_keys = loader.dataset.all_keys
+        self.all_keys = dataloader.dataset.all_keys
 
         self.epoch_samples_remaining = self.epoch_size
         self.random_samples_remaining = 0
         self.random_utts_remaining = 0
-        self.utt_iter_idx = loader.utt_iter_idx
+        self.utt_iter_idx = dataloader.utt_iter_idx
 
         self.utt_start_index = []
         self.utt_end_index = []
@@ -274,14 +279,12 @@ class HTKDataLoaderIter(object):
                 self._put_indices()
         '''
 
-        self.logger.info('DataLoaderIterator initialization close.')
-
 
     def __len__(self):
         if self.frame_mode:
-            data_cnt = self.dataset.inputs[0]['total_nframes']
+            data_cnt = self.dataset.features[0]['total_nframes']  # features[0] must be the acoustic features
         else:
-            data_cnt = self.dataset.inputs[0]['nUtts']
+            data_cnt = self.dataset.features[0]['nUtts']
         if self.drop_last:
             return data_cnt // self.batch_size
         else:
@@ -377,8 +380,8 @@ class HTKDataLoaderIter(object):
 
             for i in range(batch_size):
                 key = random_block_keys[batch_indices[i]]
-                key2idx0 = self.dataset.inputs[0]['name2idx'][key]
-                uttLength = self.dataset.inputs[0]['nframes'][key2idx0]
+                key2idx0 = self.dataset.features[0]['name2idx'][key]
+                uttLength = self.dataset.features[0]['nframes'][key2idx0]
                 batch_lengths.append(uttLength)
                 batch_keys.append(key)
                 self.epoch_samples_remaining  -= uttLength
@@ -420,6 +423,8 @@ class HTKDataLoaderIter(object):
             if self.pin_memory:
                 batch = pin_memory_batch(batch)
             return batch, lengths, keys
+        else:
+            raise Exception("NotImplementedError: multi-worker data loader iterator is not implemented.")
 
     __next__ = _next_batch
     next = __next__     # Python 2 compatibility
@@ -431,41 +436,48 @@ class HTKDataLoaderIter(object):
         """Load the next random block keys."""
         block_keys = []
         samples_remaining = 0
-        self.utt_start_index = []
-        self.utt_end_index   = []
+        utt_start_index = []
+        utt_end_index   = []
         total_nutts = len(self.all_keys)
 
-        def start_end_index_frame_mode(utt_start, utt_len):
-             self.utt_start_index += [utt_start] * utt_len
-             self.utt_end_index   += [utt_start + utt_len - 1] * utt_len
+        def start_end_index_frame_mode(samples_remaining, utt_len):
+            utt_start_index += [samples_remaining] * utt_len
+            utt_end_index   += [samples_remaining + utt_len - 1] * utt_len
+            return samples_remaining+utt_len
 
-        def start_end_index_utts_mode(utt_start, utt_len):
-             self.utt_start_index.append([0] * utt_len)
-             self.utt_end_index.append([utt_len - 1] * utt_len)
+        def start_end_index_utts_mode(samples_remaining, utt_len):
+            utt_start_index.append([0] * utt_len)
+            utt_end_index.append([utt_len - 1] * utt_len)
+            return samples_remaining+utt_len
 
         if self.frame_mode:
             start_end_index_update = start_end_index_frame_mode
         else:
             start_end_index_update = start_end_index_utts_mode
 
+        # Until the random block is full
+        # TODO: this procedure needs to be modified to be an online loading version
+        #       i.e. loading while consuming the data in _next()
         while True:
             key = self.all_keys[self.utt_iter_idx]
-            key2idx0 = self.dataset.inputs[0]['name2idx'][key]
-            if (samples_remaining + self.dataset.inputs[0]['nframes'][key2idx0]) <= self.random_size:
+            # Here we use the features[0] as the standard utterance length
+            key2idx0 = self.dataset.features[0]['name2idx'][key]
+            if (samples_remaining + self.dataset.features[0]['nframes'][key2idx0]) <= self.random_size:
                 block_keys.append(key)
                 self.utt_iter_idx = (self.utt_iter_idx + 1) % total_nutts
-                utt_len = self.dataset.inputs[0]['nframes'][key2idx0]
-                start_end_index_update(samples_remaining, utt_len)
-                samples_remaining += utt_len
+                utt_len = self.dataset.features[0]['nframes'][key2idx0]
+                samples_remaining = start_end_index_update(samples_remaining, utt_len)
             else:
                 break
 
+        self.utt_start_index = utt_start_index
+        self.utt_end_index   = utt_end_index
         return block_keys, samples_remaining
 
 
     def _get_block_data_from_keys(self, block_keys, frame_mode):
         # Read Data of keys list
-        dataset = [self.dataset.inputs, self.dataset.targets]
+        dataset = [self.dataset.features, self.dataset.targets]
         data_block = [[], []]
 
         for i, data in enumerate(dataset):
@@ -539,9 +551,9 @@ class HTKDataLoaderIter(object):
     def priors(self):
         """ return prior for MLF."""
         self.logger.info("DataLoaderIterator: Priors")
-        priors = [[None] * len(self.dataset.inputs),
+        priors = [[None] * len(self.dataset.features),
                  [None] * len(self.dataset.targets)]
-        dataset = [self.dataset.inputs, self.dataset.targets]
+        dataset = [self.dataset.features, self.dataset.targets]
         # initialization
         for data_idx, data in enumerate(dataset):
             for item_idx, item in enumerate(data):
@@ -557,9 +569,9 @@ class HTKDataLoaderIter(object):
     def normalize(self, mode=None):
         """ return mean_data, std_data
         """
-        mean_data_block = [[None] * len(self.dataset.inputs),
+        mean_data_block = [[None] * len(self.dataset.features),
                            [None] * len(self.dataset.targets)]
-        std_data_block  = [[None] * len(self.dataset.inputs),
+        std_data_block  = [[None] * len(self.dataset.features),
                            [None] * len(self.dataset.targets)]
 
         valid_mode = {None, 'globalMean', 'globalVar', 'globalMeanVar'}
@@ -567,13 +579,13 @@ class HTKDataLoaderIter(object):
             raise ValueError("normalization must be one of %r" % valid_mode)
 
         def _get_block_keys():
-            step = int(len(self.all_keys) // (self.dataset.inputs[0]['total_nframes'] // self.random_size + 1))
+            step = int(len(self.all_keys) // (self.dataset.features[0]['total_nframes'] // self.random_size + 1))
             for i in range(0, len(self.all_keys), step):
                 block_keys = self.all_keys[i:i+step]
                 nsamples = 0
                 for key in block_keys:
-                    key2idx0 = self.dataset.inputs[0]['name2idx'][key]
-                    nsamples += self.dataset.inputs[0]['nframes'][key2idx0]
+                    key2idx0  = self.dataset.features[0]['name2idx'][key]
+                    nsamples += self.dataset.features[0]['nframes'][key2idx0]
                 yield block_keys, nsamples
 
         def initialize(params):
@@ -641,7 +653,7 @@ class HTKDataLoaderIter(object):
         if mode is None:
             return mean_data_block, std_data_block
 
-        dataset = [self.dataset.inputs, self.dataset.targets]
+        dataset = [self.dataset.features, self.dataset.targets]
         mean_data_block = Mean()
         if mode != 'globalMean': std_data_block = Std()
 
@@ -651,7 +663,7 @@ class HTKDataLoaderIter(object):
     def eval(self):
         for key in self.all_keys:
             batch_data = self._get_block_data_from_keys([key], frame_mode=False)
-            length = self.dataset.inputs[0]['nframes'][ self.dataset.inputs[0]['name2idx'][key] ]
+            length = self.dataset.features[0]['nframes'][ self.dataset.features[0]['name2idx'][key] ]
             batch = [[], []]
             for i, data in enumerate(batch_data):
                 for j, data_item in enumerate(data):
@@ -666,7 +678,7 @@ class HTKDataLoaderIter(object):
             batch_keys = self.all_keys[i:i+batch_size]
             batch_data = self._get_block_data_from_keys(batch_keys, frame_mode=False)
             batch_idxs = [i for i in range(len(batch_keys))]
-            lengths = [ self.dataset.inputs[0]['nframes'][ self.dataset.inputs[0]['name2idx'][key] ] for key in batch_keys ]
+            lengths = [ self.dataset.features[0]['nframes'][ self.dataset.features[0]['name2idx'][key] ] for key in batch_keys ]
             sorted_lengths, order = torch.sort(torch.IntTensor(lengths), 0, descending=True)
             batch = [[], []]
             for i, data in enumerate(batch_data):
@@ -699,36 +711,35 @@ class HTKDataLoaderIter(object):
         raise NotImplementedError("DataLoaderIterator cannot be pickled")
 
 
-class HTKDataLoader(DataLoader):
+class DataLoader(DataLoader):
     """
      Data loader. Combines a dataset and provides
      single- or multi-process iterators over the dataset.
-     Arguments:
-         dataset (Dataset): dataset from which to load the data.
-         batch_size (int, optional): how many samples per batch to load (default: 1). In frame_mode,
+     :param dataset (Dataset): dataset from which to load the data.
+     :param batch_size (int, optional): how many samples per batch to load (default: 1). In frame_mode,
             batch_size means number of samples, otherwise, it means number of utterances.
-         num_workers (int, optional): how many subprocesses to use for data
+     :param num_workers (int, optional): how many subprocesses to use for data
             loading. 0 means that the data will be loaded in the main process
             (default: 0)
-         collate_fn (callable, optional)
-         pin_memory (bool, optional)
-         drop_last (bool, optional): set to ``True`` to drop the last incomplete batch, if the dataset size is not divisible by the batch size. If False and the size of dataset is not divisible by the batch size, then the last batch will be smaller. (default: False)
-         frame_mode(bool, optional): set to ``False`` to enable (utterance) sequence
-         permutation(bool, optional): whether permutate the indices in the iterator
-         random_size(int, optional): defines the number of frames to load for once
-         epoch_size(int, optional): defines the number of frames for each epoch
-         truncate_size(int, optional): defines the truncate length in RNN
-         utt_iter_idx(int, optional): defines the beginning utterance index to be loaded
-         random_seed(int, optional): defines the random seed
-         padding_value(int, optional): defines the value to be padded in sequence mode
+     :param collate_fn (callable, optional)
+     :param pin_memory (bool, optional)
+     :param drop_last (bool, optional): set to ``True`` to drop the last incomplete batch, if the dataset size is not divisible by the batch size. If False and the size of dataset is not divisible by the batch size, then the last batch will be smaller. (default: False)
+     :param frame_mode(bool, optional): set to ``False`` to enable (utterance) sequence
+     :param permutation(bool, optional): whether permutate the indices in the iterator
+     :param random_size(int, optional): defines the number of frames to load for once
+     :param epoch_size(int, optional): defines the number of frames for each epoch
+     :param truncate_size(int, optional): defines the truncate length in RNN
+     :param utt_iter_idx(int, optional): defines the beginning utterance index to be loaded
+     :param random_seed(int, optional): defines the random seed
+     :param padding_value(int, optional): defines the value to be padded in sequence mode
     """
     def __init__(self, dataset, batch_size=1, num_workers=0,
                  collate_fn=default_collate, pin_memory=False, drop_last=False,
                  frame_mode=False, permutation=True, random_size=None,
                  epoch_size=None, truncate_size=0, utt_iter_idx=0,
-                 random_seed=19931225, logger=None, padding_value=0):
-        logging.basicConfig(format='[%(name)s] %(levelname)s %(asctime)s: %(message)s', datefmt="%m-%d %H:%M:%S", level=logging.DEBUG)
-        self.logger = logger if logger else logging.getLogger('DataLoader')
+                 random_seed=19931225, padding_value=0):
+        self.logger = logging.getLogger('DataLoader')
+        self.logger.info('DataLoader initialization')
 
         self.dataset = dataset
         self.num_workers = num_workers
@@ -742,20 +753,19 @@ class HTKDataLoader(DataLoader):
         self.padding_value = padding_value
 
         self.batch_size  = batch_size
-        self.random_size = random_size if random_size else self.dataset.inputs[0]['total_nframes']
+        self.random_size = random_size if random_size else self.dataset.features[0]['total_nframes']
         self.epoch_size  = epoch_size if epoch_size else self.random_size
         self.truncate_size = truncate_size
 
-        self.logger.info('DataLoader initialization close.')
 
 
     def __iter__(self):
-        return HTKDataLoaderIter(self)
+        return DataLoaderIter(self)
 
 
     def __len__(self):
         """Epoch size."""
         if self.drop_last:
-            return self.dataset.inputs[0]['total_nframes'] // self.epoch_size
+            return self.dataset.features[0]['total_nframes'] // self.epoch_size
         else:
-            return (self.dataset.inputs[0]['total_nframes'] + self.epoch_size - 1) // self.epoch_size
+            return (self.dataset.features[0]['total_nframes'] + self.epoch_size - 1) // self.epoch_size
