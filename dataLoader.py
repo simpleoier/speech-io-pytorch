@@ -216,8 +216,8 @@ class DataLoaderIter(object):
         self.batch_size = dataloader.batch_size
         self.frame_mode = dataloader.frame_mode
         self.padding_value = dataloader.padding_value
-        self.random_size = min(dataloader.random_size, self.dataset.inputs[0]['total_nframes'])
-        self.epoch_size  = min(dataloader.epoch_size,  self.dataset.inputs[0]['total_nframes'])
+        self.random_size = min(dataloader.random_size, self.dataset.features[0]['total_nframes'])
+        self.epoch_size  = min(dataloader.epoch_size,  self.dataset.features[0]['total_nframes'])
         self.context_window = [
             [feature['context_window'] for feature in self.dataset.features],
             [target['context_window'] for target in self.dataset.targets]

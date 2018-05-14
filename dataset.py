@@ -40,17 +40,18 @@ def new_data_item(config_param):
         :nframes:   int list, number of frames for each utterance
         :context_window: tuple, context window size
         :label_mapping: label_mapping, from int to label
-        :name2idx:  dictionary, 
+        :name2idx:  dictionary,
     """
     # Define all possible attributes for data and labels
     base_attributes = ['dim', 'data_type', 'data', 'nUtts', 'format'
                     'start_f', 'nframes', 'context_window',
                     'label_mapping', 'name2idx', 'total_nframes']
     item_dict = {}
-    for key in self.base_attributes: item_dict[key] = None
+    for key in base_attributes: item_dict[key] = None
     item_dict['dim'] = config_param['dim']
     item_dict['data_type'] = config_param['type']
-    item_dict['format'] = config_param['format']
+    if 'format' in config_param:
+        item_dict['format'] = config_param['format']
     if 'context_window' in config_param:
         item_dict['context_window'] = config_param['context_window']
     return item_dict
@@ -82,7 +83,7 @@ class Dataset(object):
          """
 
         self.logger = logger if logger else logging.getLogger('Dataset')
-        self.logger.info("HTKDataset initialization")
+        self.logger.info("Dataset initialization")
 
         """ If reading configures are not lists, convert them to lists """
         feature_config_parms = feature_config_parms if isinstance(feature_config_parms, list) else [feature_config_parms]
@@ -124,7 +125,7 @@ class Dataset(object):
                     self.logger.warning("reject\n{}\n\t total {} frames in {} out of {} utterances, {} files of {}[{}] not found in other data or labels".format('\n'.join(not_found_info), item['total_nframes'], item['nUtts'], item['nUtts']+len(empty_keys_list), len(empty_keys_list), data_description[d], i))
 
         """ Verify Lengths """
-        data_set = self.inputs + self.targets
+        data_set = self.features + self.targets
         if not verify_length:
             return all_keys
 
@@ -413,7 +414,7 @@ class Dataset(object):
             name2idx = {}
             lab_nframes = []
 
-            with open(file_name, 'r') as file:
+            with open(json_file_name, 'r') as file:
                 json_file = json.load(file)['utts']
 
             utts = list(json_file.keys())
@@ -423,7 +424,7 @@ class Dataset(object):
                 lab_nframes.append(int(json_file[utt]['olen']))
             return (labels, name2idx, lab_nframes)
 
-        (labels, name2idx, lab_nframes) = self._read_HTK_MLF(mlf_file_name)
+        (labels, name2idx, lab_nframes) = read_json_file(json_file_name)
         if 'label_mapping' in config_parm:
             label_mapping_path = config_parm['label_mapping']
             (label_mapping, _) = self._read_label_mapping(label_mapping_path)
@@ -433,4 +434,4 @@ class Dataset(object):
         data['data']    = labels;       data['name2idx']      = name2idx
         data['nframes'] = lab_nframes;  data['label_mapping'] = label_mapping
         data['nUtts']   = len(labels);  data['total_nframes'] = sum(lab_nframes)
-        self.logger.info("Reading JSON file %s ... total %d entries." % (mlf_file_name, len(labels)))
+        self.logger.info("Reading JSON file %s ... total %d entries." % (json_file_name, len(labels)))
