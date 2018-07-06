@@ -371,38 +371,34 @@ class DataLoaderIter(object):
             batch_indices = [next(self.perm_indices) for _ in range(batch_size)]
             self.epoch_samples_remaining -= batch_size
             self.random_samples_remaining -= batch_size
-            return batch_indices, None, None
+            return batch_indices
 
-        indices, _, _ = _next_batch_indices(self.random_block_keys, batch_size)
+        indices = _next_batch_indices(self.random_block_keys, batch_size)
         batch = [[], []]
         for i, data in enumerate(self.block_data):
             for j, data_item in enumerate(data):
                 tmp_batch = self._frame_feature_augmentation(data_item, indices, self.context_window[i][j], utt_start_index=self.utt_start_index, utt_end_index=self.utt_end_index)
                 batch[i].append(torch.from_numpy(tmp_batch))
-        return batch, None, None, None
+        return batch, None, None
 
     def _next_batch_utts_mode(self, batch_size):
 
         def _next_batch_indices(random_block_keys, batch_size):
             batch_size = min(self.random_utts_remaining, batch_size)
             batch_indices = [next(self.perm_indices) for _ in range(batch_size)]
-            batch_standard_lengths = []
             batch_keys = []
 
             for i in range(batch_size):
                 key = random_block_keys[batch_indices[i]]
                 key2idx0 = self.dataset.features[0]['name2idx'][key]
                 uttLength = self.dataset.features[0]['nframes'][key2idx0]
-                batch_standard_lengths.append(uttLength)
                 batch_keys.append(key)
                 self.epoch_samples_remaining  -= uttLength
                 self.random_samples_remaining -= uttLength
             self.random_utts_remaining -= batch_size
-            return batch_indices, batch_standard_lengths, batch_keys
+            return batch_indices, batch_keys
 
-        indices, standard_lengths, keys = _next_batch_indices(self.random_block_keys, batch_size)
-        sorted_standard_lengths, order = torch.sort(torch.IntTensor(standard_lengths), 0, descending=True)
-        keys  = [keys[i] for i in order]
+        indices, keys = _next_batch_indices(self.random_block_keys, batch_size)
         batch = [[], []]
         batch_lengths = [[], []]
         for i, data in enumerate(self.block_data):
@@ -410,9 +406,9 @@ class DataLoaderIter(object):
                 tmp_batch, tmp_batch_lengths = self._utterance_feature_augmentation(data_item, indices, self.context_window[i][j])
                 #batch[i].append(self.collate_fn(tmp_batch, self.frame_mode))
                 defaultTensor = self._get_default_tensor(tmp_batch)
-                batch[i].append(convertUttsList2Tensor(tmp_batch, defaultTensor, tmp_batch_lengths, padding_value=self.padding_value)[order])
-                batch_lengths[i].append([tmp_batch_lengths[m] for m in order])
-        return batch, list(sorted_standard_lengths), keys, batch_lengths
+                batch[i].append(convertUttsList2Tensor(tmp_batch, defaultTensor, tmp_batch_lengths, padding_value=self.padding_value))
+                batch_lengths[i].append(tmp_batch_lengths)
+        return batch, batch_lengths, keys
 
     def _next_batch(self):
         if self.num_workers == 0:   # same_process loading
@@ -430,12 +426,12 @@ class DataLoaderIter(object):
                 self.perm_indices = iter(np.random.permutation(data_cnt)) if self.permutation else iter(np.arange(data_cnt))
 
             if self.frame_mode:
-                 batch, standard_lengths, keys, lengths = self._next_batch_frame_mode(self.batch_size)
+                 batch, lengths, keys = self._next_batch_frame_mode(self.batch_size)
             else:
-                 batch, standard_lengths, keys, lengths = self._next_batch_utts_mode(self.batch_size)
+                 batch, lengths, keys = self._next_batch_utts_mode(self.batch_size)
             if self.pin_memory:
                 batch = pin_memory_batch(batch)
-            return batch, standard_lengths, keys, lengths
+            return batch, lengths, keys
         else:
             raise Exception("NotImplementedError: multi-worker data loader iterator is not implemented.")
 
@@ -706,16 +702,17 @@ class DataLoaderIter(object):
         for i in range(0, len(self.all_keys), batch_size):
             batch_keys = self.all_keys[i:i+batch_size]
             batch_data = self._get_block_data_from_keys(batch_keys, frame_mode=False)
-            batch_idxs = [i for i in range(len(batch_keys))]
-            lengths = [ self.dataset.features[0]['nframes'][ self.dataset.features[0]['name2idx'][key] ] for key in batch_keys ]
-            sorted_lengths, order = torch.sort(torch.IntTensor(lengths), 0, descending=True)
+            batch_idxs = [j for j in range(len(batch_keys))]
             batch = [[], []]
+            batch_lengths = [[], []]
             for i, data in enumerate(batch_data):
                 for j, data_item in enumerate(data):
+                    tmp_lengths = [ data_item['nframes'][ data_item['name2idx'][key] ] for key in batch_keys ]
                     tmp_batch = self._utterance_feature_augmentation(data_item, batch_idxs, self.context_window[i][j])
                     defaultTensor = self._get_default_tensor(tmp_batch)
-                    batch[i].append(convertUttsList2Tensor(tmp_batch, defaultTensor, lengths, padding_value=self.padding_value)[order])
-            yield batch, list(sorted_lengths), batch_keys
+                    batch[i].append(convertUttsList2Tensor(tmp_batch, defaultTensor, tmp_lengths, padding_value=self.padding_value))
+                    batch_lengths[i].append(tmp_lengths)
+            yield batch, batch_lengths, batch_keys
 
 
     '''

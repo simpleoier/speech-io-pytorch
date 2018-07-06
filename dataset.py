@@ -110,7 +110,6 @@ class Dataset(object):
         self.logger.info("Dataset verifying data")
 
         data_set = [self.features, self.targets]
-        data_description = ['feature', 'target']
 
         # get the intersection of all the keys of dataset
         all_keys = data_set[0][0]['name2idx'].keys()
@@ -124,14 +123,14 @@ class Dataset(object):
             for i, item in enumerate(data):
                 empty_keys_list = list( set( item['name2idx'].keys() ) - all_keys_set )
 
-                if (len(empty_keys_list)>0):
-                    item['nUtts'] -= len(empty_keys_list)
-                    for key in empty_keys_list:
-                        key2idx0 = item['name2idx'][key]
-                        item['total_nframes'] -= item['nframes'][key2idx0]
+        if (len(empty_keys_list)>0):
+            item['nUtts'] -= len(empty_keys_list)
+            for key in empty_keys_list:
+                key2idx0 = item['name2idx'][key]
+                item['total_nframes'] -= item['nframes'][key2idx0]
 
-                    not_found_info = empty_keys_list[:4] + ['.'*50]
-                    self.logger.warning("reject\n{}\n\t total {} frames in {} out of {} utterances, {} files of {}[{}] not found in other data or labels".format('\n'.join(not_found_info), item['total_nframes'], item['nUtts'], item['nUtts']+len(empty_keys_list), len(empty_keys_list), data_description[d], i))
+            not_found_info = empty_keys_list[:min(4,len(empty_keys_list))]
+            self.logger.warning("reject\n\t{} \n\t{} \n\ttotal {} frames in {} out of {} utterances, {} files not found in other data or labels".format('\n\t'.join(not_found_info), '.'*50, item['total_nframes'], item['nUtts'], item['nUtts']+len(empty_keys_list), len(empty_keys_list)))
 
         """ Verify Lengths """
         data_set = self.features + self.targets
