@@ -11,24 +11,19 @@
 # Description :
 # ====================================================================
 
+import os, sys, io, re, time, logging, math, threading, traceback, collections
+
+import numpy as np
+
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 import torch.utils.data as torch_data
-import collections
-import math
-import sys
-import io
-import re
-import os
-import time
-import logging
-import threading
-import traceback
-import numpy as np
 from HTK_IO import HTKFeat_read, HTKFeat_write
+
 sys.path.append('./kaldi-io-for-python')
 from kaldi_io import read_mat
+
 if sys.version_info[0] == 2:
     import Queue as queue
     string_classes = basestring

@@ -10,22 +10,18 @@
 # Description :
 # ====================================================================
 
+
+import os, sys, math, collections, time, logging, json, re, threading, traceback
+
+import numpy as np
+
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 import torch.utils.data as torch_data
-import collections
-import math
-import sys
-import re
-import os
-import time
-import logging
-import threading
-import traceback
-import json
-import numpy as np
+
 from HTK_IO import HTKFeat_read, HTKFeat_write
+
 if sys.version_info[0] == 2:
     import Queue as queue
     string_classes = basestring
