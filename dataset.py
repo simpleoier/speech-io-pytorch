@@ -22,6 +22,9 @@ import torch.utils.data as torch_data
 
 from HTK_IO import HTKFeat_read, HTKFeat_write
 
+sys.path.append('./kaldi-io-for-python')
+import kaldi_io
+
 if sys.version_info[0] == 2:
     import Queue as queue
     string_classes = basestring
@@ -36,7 +39,7 @@ def new_data_item(config_param):
     """
      Note:
         :dim:       int, dimension, such as 40-dimensional fbank, or 4009 dimensional targets
-        :data_type: string, MLF or SCP or JSON
+        :data_type: string, ALI or FEAT or JSON
         :type:      string, from CNTK, only for target, "category"
         :data:      list, feature path or label data
         :nUtts:     int, number of utterances
@@ -46,11 +49,13 @@ def new_data_item(config_param):
         :context_window: tuple, context window size
         :label_mapping: label_mapping, from int to label
         :name2idx:  dictionary,
+        :feat_to_len_file_name: Kaldi, feat-to-len file name
     """
     # Define all possible attributes for data and labels
-    base_attributes = ['dim', 'data_type', 'data', 'nUtts', 'format'
+    base_attributes = ['dim', 'data_type', 'data', 'nUtts', 'format',
                     'start_f', 'nframes', 'context_window',
-                    'label_mapping', 'name2idx', 'total_nframes']
+                    'label_mapping', 'name2idx', 'total_nframes',
+                    'feat_to_len_file_name']
     item_dict = {}
     for key in base_attributes: item_dict[key] = None
     item_dict['dim'] = config_param['dim']
@@ -59,6 +64,11 @@ def new_data_item(config_param):
         item_dict['format'] = config_param['format']
     if 'context_window' in config_param:
         item_dict['context_window'] = config_param['context_window']
+    if item_dict['format'] == "Kaldi" and item_dict['data_type'] == "FEAT":
+        if 'feat_to_len_file_name' in config_param:
+            item_dict['feat_to_len_file_name'] = config_param['feat_to_len_file_name']
+        else:
+            raise Exception("Expect feat_to_len_file_name to be defined in configure parameter")
     return item_dict
 
 
@@ -74,9 +84,9 @@ class Dataset(object):
          :param feature_config_params, target]config_parms:
             dict or dict_list including:
                 file_name (string): Path to SCP file or MLF file
-                type("MLF" or "SCP"),
-                    SCP type: dim(int), context_window(tuple),
-                    MLF type: dim(int), label_mapping(file_path), type("category"). Only in label.
+                type("ALI" or "FEAT"),
+                    FEAT type: dim(int), context_window(tuple),
+                    ALI type: dim(int), label_mapping(file_path), type("category"). Only in label.
          :param max_utt_len:
             int, max utterance length permitted, so we can drop utterances longer than it
          :param verify_length:
@@ -147,15 +157,16 @@ class Dataset(object):
         """ Read inputs and targets."""
         data = []
         for i, config in enumerate(config_params):
+            if config is None: continue
             data_item = new_data_item(config)
 
             file_name = config['file_name']
 
-            if data_item['data_type'] == "SCP":
-                self._read_SCP(file_name, data_item)
-            elif data_item['data_type'] == "MLF":
+            if data_item['data_type'] == "FEAT":
+                self._read_FEAT(file_name, data_item)
+            elif data_item['data_type'] == "ALI":
                 data_item['type'] = config['label_type']
-                self._read_MLF(file_name, config, data_item)
+                self._read_ALI(file_name, config, data_item)
             elif data_item['data_type'] == 'JSON':
                 self._read_JSON(file_name, config, data_item)
 
@@ -165,7 +176,7 @@ class Dataset(object):
         return data
 
 
-    def _read_SCP(self, file_name, data):
+    def _read_FEAT(self, file_name, data):
         """ Function for SCP data type.
               file_name(string),
               data(dictionary)
@@ -173,7 +184,7 @@ class Dataset(object):
         if data['format'] == 'HTK':
             (feats, name2idx, feat_start_f, feat_nframes) = self._read_HTK_feats_SCP(file_name)
         elif data['format'] == 'Kaldi':
-            (feats, name2idx, feat_start_f, feat_nframes) = self._read_Kaldi_feats_SCP(file_name)
+            (feats, name2idx, feat_start_f, feat_nframes) = self._read_Kaldi_feats_SCP(file_name, data['feat_to_len_file_name'])
         data['data']    = feats;        data['name2idx']      = name2idx
         data['start_f'] = feat_start_f; data['nframes']       = feat_nframes
         data['nUtts']   = len(feats);   data['total_nframes'] = sum(feat_nframes)
@@ -265,7 +276,7 @@ class Dataset(object):
             line = file.readline().strip()
             while line:
                 feat_name, feat_path = line.split(' ')[0:2]  # xxxxxx.feats, /path/to/xxxxxx.ark:start_f
-                start_frame = rest_info[feat_path.rfind(':')+1:]  # start_f
+                start_frame = feat_path[feat_path.rfind(':')+1:]  # start_f
                 length = feat_to_len[feat_name]
 
                 # read next line
@@ -282,20 +293,24 @@ class Dataset(object):
                 if feat_name not in name2idx:
                     name2idx[feat_name] = len(feats) - 1
                 else:
-                    raise Exception("FormatError: an error occur while reading Kaldi SCP file(%s), duplicate input name: %s" % (scp_file_name, str(2), feat_name))
+                    raise Exception("FormatError: an error occur while reading Kaldi SCP file(%s), duplicate input name: %s" % (scp_file_name, feat_name))
 
         if skip_cnt > 0:
             self.logger.info("minibatchutterancesource: skipping %d files because exceeding maxUtteranceLength (%d frames)" % (skip_cnt, self.max_utt_len) )
         return (feats, name2idx, feat_start_f, feat_nframes)
 
 
-    def _read_MLF(self, mlf_file_name, config_parms, data):
-        """ Function for MLF data type.
-              mlf_file_name(string),
+    def _read_ALI(self, ali_file_name, config_parms, data):
+        """ Function for ALI data type.
+              ali_file_name(string),
               config_parms(dictionary)
               data(dictionary)
         """
-        (labels, name2idx, lab_nframes) = self._read_HTK_MLF(mlf_file_name)
+        if data['format'] == "HTK":
+            (labels, name2idx, lab_nframes) = self._read_HTK_MLF(ali_file_name)
+        elif data['format'] == "Kaldi":
+            (labels, name2idx, lab_nframes) = self._read_Kaldi_align_SCP(ali_file_name)
+
         if 'label_mapping' in config_parms:
             label_mapping_path = config_parms['label_mapping']
             (label_mapping, _) = self._read_label_mapping(label_mapping_path)
@@ -305,7 +320,7 @@ class Dataset(object):
         data['data']    = labels;       data['name2idx']      = name2idx
         data['nframes'] = lab_nframes;  data['label_mapping'] = label_mapping
         data['nUtts']   = len(labels);  data['total_nframes'] = sum(lab_nframes)
-        self.logger.info("Reading MLF file %s ... total %d entries." % (mlf_file_name, len(labels)))
+        self.logger.info("Reading Alignment file %s ... total %d entries." % (ali_file_name, len(labels)))
 
 
     def _read_HTK_MLF(self, mlf_file_name=None, delete_toolong=True):
@@ -394,6 +409,30 @@ class Dataset(object):
         if (label_type_int):
             label_mapping = [int(x) for x in label_mapping]
         return (label_mapping, label_type_int)
+
+
+    def _read_Kaldi_align_SCP(self, scp_file_name):
+        """ Read the SCP files in Kaldi format: xxxxxx /path/to/xxxxxx.ark:offset
+            Different from reading the kaldi feats scp files, the ark files for alignment
+            contain the int vectors rather than matrices.
+        """
+        # Read alignment from scp
+        if (scp_file_name == None or not os.path.exists(scp_file_name)):
+            raise Exception("FileNonExistError an error occur while reading SCP file({0})".format(scp_file_name))
+
+        labels = []
+        name2idx = {}
+        lab_nframes = []
+
+        for key,vec in kaldi_io.read_vec_int_scp(scp_file_name):
+            labels.append(vec.tolist())
+            lab_nframes.append(vec.size)
+
+            if key not in name2idx:
+                name2idx[key] = len(labels) - 1
+            else:
+                raise Exception("FormatError: an error occur while reading Kaldi SCP file(%s), duplicate input name: %s" % (scp_file_name, key))
+        return labels, name2idx, lab_nframes
 
 
     # TODO

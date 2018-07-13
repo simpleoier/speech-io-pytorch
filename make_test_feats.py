@@ -13,12 +13,12 @@
 
 import numpy as np
 from os import path
+import sys, subprocess
 
 # Features
 from HTK_IO import HTKFeat_write, FBANK, _O
-def generate_features():
+def generate_htk_features():
     index = -1
-    dim = 40
     for i in range(file_num):
         file_name = path.join(datadir, file_name_prefix + str(i) + '.feat')
         writer = HTKFeat_write(file_name, veclen=dim, sampPeriod=16000)
@@ -28,10 +28,10 @@ def generate_features():
             tmp_feat[j] = np.array([index] * dim)
         writer.writeall(tmp_feat)
 
-# SCP
-def generate_scp():
+# HTK SCP
+def generate_htk_scp():
     index = -1
-    scp_file_name = path.join(datadir, 'feat.scp')
+    scp_file_name = path.join(datadir, 'htk_feat.scp')
     scp_file = open(scp_file_name, 'w')
     for i in range(file_num):
         scp_file.write("{0}.feat={1}/{0}.feat[0,{2}]\n".format(file_name_prefix+str(i), datadir, file_len[i]-1))
@@ -58,6 +58,40 @@ def generate_mlf():
         mapping_file.write("%d\n"%i)
     mapping_file.close()
 
+# Kaldi SCP
+sys.path.append('./kaldi-io-for-python')
+import kaldi_io
+
+#def generate_kaldi_scp():
+#    scp_file_name = path.join(datadir, 'kaldi_feats.scp')
+#    with open(scp_file_name, 'w') as scp_file:
+#        for i in range(file_num):
+#            scp_file.write('{0} {1}/{0}.')
+
+def generate_kaldi_feats_ark():
+    index = -1
+    ark_file_name = path.join(datadir, 'kaldi_feats.ark')
+    with open(ark_file_name, 'wb') as ark:
+        for i in range(file_num):
+            filename = file_name_prefix + str(i)
+            tmp_feat = np.zeros((file_len[i], dim))
+            for j in range(file_len[i]):
+                index += 1
+                tmp_feat[j] = index
+            kaldi_io.write_mat(ark, tmp_feat, key=filename)
+
+def generate_kaldi_alignments_ark():
+    index = -1
+    ark_file_name = path.join(datadir, 'kaldi_alignments.ark')
+    with open(ark_file_name, 'wb') as ark:
+        for i in range(file_num):
+            filename = file_name_prefix + str(i)
+            tmp_feat = np.zeros((file_len[i]), dtype=np.int32)
+            for j in range(file_len[i]):
+                index += 1
+                tmp_feat[j] = index
+            kaldi_io.write_vec_int(ark, tmp_feat, key=filename)
+
 # JSON
 import json
 def generate_json():
@@ -78,12 +112,15 @@ def generate_json():
 if __name__ == "__main__":
     np.random.seed(19931225)
     datadir = path.join(path.dirname(path.dirname(path.realpath(__file__))), 'test_data') #'../test_data'
-    file_name_prefix = 'artificial_feats'
+    dim = 40
+    file_name_prefix = 'artificial_feats_kaldi' # 'artificial_feats_htk'
     file_num = 10
     file_len = np.random.randint(100, high=250, size=file_num)
     #print(file_len)
 
-    generate_features()
-    generate_scp()
-    generate_mlf()
-    generate_json()
+    #generate_htk_features()
+    #generate_htk_scp()
+    #generate_mlf()
+    #generate_json()
+    generate_kaldi_feats_ark()
+    generate_kaldi_alignments_ark()

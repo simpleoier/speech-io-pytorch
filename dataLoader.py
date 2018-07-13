@@ -247,7 +247,12 @@ class DataLoaderIter(object):
         self.utt_end_index = []
         self.random_block_keys = []
 
-        self._get_SCP_block = self._get_HTK_SCP_block
+        if self.dataset.features[0]['format'] == "HTK":
+            self._get_FEAT_block = self._get_HTK_FEAT_block
+        elif self.dataset.features[0]['format'] == "Kaldi":
+            self._get_FEAT_block = self._get_Kaldi_FEAT_block
+        else:
+            raise Exception("dataset format {} is not supported.".format(self.dataset.features[0]['format']))
 
         '''
         if self.num_workers > 0:
@@ -313,7 +318,7 @@ class DataLoaderIter(object):
 
     def _frame_feature_augmentation(self, data_item, batchidxs, context_window, utt_start_index, utt_end_index):
         # Context Window is None or = 0
-        if context_window is None or sum(context_window)==0: # MLF have no context
+        if context_window is None or sum(context_window)==0: # ALI have no context
             return data_item[batchidxs]
 
         # Context Window > 0
@@ -334,7 +339,7 @@ class DataLoaderIter(object):
 
     def _utterance_feature_augmentation(self, data_item, batchidxs, context_window):
         # Context Window is None or = 0
-        if context_window is None or sum(context_window)==0: # MLF have no context
+        if context_window is None or sum(context_window)==0: # ALI have no context
             return data_item[batchidxs].tolist(), [len(data_item[idx]) for idx in batchidxs]
 
         # Context Window > 0
@@ -486,17 +491,17 @@ class DataLoaderIter(object):
 
         for i, data in enumerate(dataset):
             for item in data:
-                if item['data_type'] == 'SCP':
-                    tmp_data_block = self._get_SCP_block(item, block_keys, frame_mode)
-                elif item['data_type'] == 'MLF':
-                    tmp_data_block = self._get_MLF_block(item, block_keys, frame_mode)
+                if item['data_type'] == 'FEAT':
+                    tmp_data_block = self._get_FEAT_block(item, block_keys, frame_mode)
+                elif item['data_type'] == 'ALI':
+                    tmp_data_block = self._get_ALI_block(item, block_keys, frame_mode)
                 elif item['data_type'] == 'JSON':
                     tmp_data_block = self._get_JSON_block(item, block_keys, frame_mode)
                 data_block[i].append(tmp_data_block)
         return data_block
 
 
-    def _get_HTK_SCP_block(self, subdataset, block_keys, frame_mode):
+    def _get_HTK_FEAT_block(self, subdataset, block_keys, frame_mode):
         # Read the HTK feats according to a list of keys and store them in a random block
         block_data = []
         dimension = subdataset['dim']
@@ -510,7 +515,7 @@ class DataLoaderIter(object):
             htk_reader = HTKFeat_read(feat_path)
             htk_data = htk_reader.getsegment(feat_start, feat_start+feat_len-1)
             if (htk_data.shape[1] != dimension):
-                raise Exception("HTK SCP Block: dimension does not match, %d in configure vs. %d in data" % (dimension, htk_data.shape[1]))
+                raise Exception("HTK FEAT Block: dimension does not match, %d in configure vs. %d in data" % (dimension, htk_data.shape[1]))
             htk_reader.close()
             block_data.append(htk_data)
 
@@ -519,7 +524,7 @@ class DataLoaderIter(object):
         else:
             return np.array(block_data)
 
-    def _get_Kaldi_SCP_block(self, subdataset, block_keys, frame_mode):
+    def _get_Kaldi_FEAT_block(self, subdataset, block_keys, frame_mode):
         # Read the Kaldi feats according to a list of keys and store them in a random block
         block_data = []
         dimension = subdataset['dim']
@@ -530,7 +535,7 @@ class DataLoaderIter(object):
 
             kaldi_data = read_mat(feat_path)
             if (kaldi_data.shape[1] != dimension):
-                raise Exception("Kaldi SCP Block: dimension does not match, %d in configure vs. %d in data" % (dimension, kaldi_data.shape[1]))
+                raise Exception("Kaldi FEAT Block: dimension does not match, %d in configure vs. %d in data" % (dimension, kaldi_data.shape[1]))
             block_data.append(kaldi_data)
 
         if frame_mode:
@@ -539,9 +544,9 @@ class DataLoaderIter(object):
             return np.array(block_data)
 
 
-    def _get_MLF_block(self, subdataset, block_keys, frame_mode):
-        # Read the MLF feats according to a list of keys and store them in a random block
-        # :params: subdataset: one input or target in MLF format
+    def _get_ALI_block(self, subdataset, block_keys, frame_mode):
+        # Read the ALI feats according to a list of keys and store them in a random block
+        # :params: subdataset: one input or target in ALI format
         block_data = []
         if frame_mode:
             append_data = lambda mlf_data: block_data.extend(mlf_data)
@@ -569,7 +574,7 @@ class DataLoaderIter(object):
 
 
     def priors(self):
-        """ return prior for MLF."""
+        """ return prior for ALI."""
         self.logger.info("DataLoaderIterator: Priors")
         priors = [[None] * len(self.dataset.features),
                  [None] * len(self.dataset.targets)]
@@ -577,7 +582,7 @@ class DataLoaderIter(object):
         # initialization
         for data_idx, data in enumerate(dataset):
             for item_idx, item in enumerate(data):
-                if item['data_type'] != 'MLF': continue
+                if item['data_type'] != 'ALI': continue
                 prior_item = np.ones(dataset[data_idx][item_idx]['dim'])
                 for key in self.all_keys:
                     key2idx0 = dataset[data_idx][item_idx]['name2idx'][key]
@@ -611,7 +616,7 @@ class DataLoaderIter(object):
         def initialize(params):
             for data_idx, data in enumerate(dataset):
                 for item_idx, item in enumerate(data):
-                    if item['data_type'] == 'SCP':
+                    if item['data_type'] == 'FEAT':
                         params[data_idx][item_idx] = np.zeros(item['dim'])
 
         def Mean():
@@ -624,7 +629,7 @@ class DataLoaderIter(object):
                         if mean_block is None: continue
 
                         total_nframes = dataset[data_idx][block_idx]['total_nframes']
-                        block = self._get_SCP_block(dataset[data_idx][block_idx], block_keys, frame_mode=True)
+                        block = self._get_FEAT_block(dataset[data_idx][block_idx], block_keys, frame_mode=True)
                         mean_data_block[data_idx][block_idx] += np.mean(block, axis=0) * (nsamples / total_nframes)
 
             return mean_data_block
@@ -639,7 +644,7 @@ class DataLoaderIter(object):
                         if std_block is None: continue
 
                         total_nframes = dataset[data_idx][block_idx]['total_nframes']
-                        block = self._get_SCP_block(dataset[data_idx][block_idx], block_keys, frame_mode=True)
+                        block = self._get_FEAT_block(dataset[data_idx][block_idx], block_keys, frame_mode=True)
                         std_data_block[data_idx][block_idx] += np.var(block-mean_data_block[data_idx][block_idx], axis=0) * (nsamples / total_nframes)
 
             # Sqrt
@@ -660,7 +665,7 @@ class DataLoaderIter(object):
                         if std_block is None: continue
 
                         total_nframes = dataset[data_idx][block_idx]['total_nframes']
-                        block = self._get_SCP_block(dataset[data_idx][block_idx], block_keys, frame_mode=False)
+                        block = self._get_FEAT_block(dataset[data_idx][block_idx], block_keys, frame_mode=False)
                         mean_data_block[data_idx][block_idx] += np.mean(block, axis=0) * (nsamples / total_nframes)
                         std_data_block[data_idx][block_idx] += np.var(block-mean_data_block[data_idx][block_idx], axis=0) * (nsamples / total_nframes)
             # Sqrt
