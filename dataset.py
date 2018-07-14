@@ -33,6 +33,7 @@ else:
     string_classes = (str, bytes)
 
 logging.basicConfig(format='[%(name)s] %(levelname)s(%(asctime)s): %(message)s', datefmt="%m-%d %H:%M:%S", level=logging.DEBUG)
+logger = logging.getLogger('Dataset')
 
 
 def new_data_item(config_param):
@@ -49,13 +50,13 @@ def new_data_item(config_param):
         :context_window: tuple, context window size
         :label_mapping: label_mapping, from int to label
         :name2idx:  dictionary,
-        :feat_to_len_file_name: Kaldi, feat-to-len file name
+        :feat_to_len_file_name: only for format-Kaldi data_type-FEAT, feat-to-len file name
     """
     # Define all possible attributes for data and labels
     base_attributes = ['dim', 'data_type', 'data', 'nUtts', 'format',
-                    'start_f', 'nframes', 'context_window',
-                    'label_mapping', 'name2idx', 'total_nframes',
-                    'feat_to_len_file_name']
+                       'start_f', 'nframes', 'context_window',
+                       'label_mapping', 'name2idx', 'total_nframes',
+                       'feat_to_len_file_name']
     item_dict = {}
     for key in base_attributes: item_dict[key] = None
     item_dict['dim'] = config_param['dim']
@@ -79,7 +80,7 @@ class Dataset(object):
      Targets (labels) are preferred in JSON format.
     """
     def __init__(self, feature_config_parms=None, target_config_parms=None,
-                 max_utt_len=0, verify_length=True, logger=None):
+                 max_utt_len=0, verify_length=True):
         """ Initialize parameters.
          :param feature_config_params, target]config_parms:
             dict or dict_list including:
@@ -91,18 +92,11 @@ class Dataset(object):
             int, max utterance length permitted, so we can drop utterances longer than it
          :param verify_length:
             verify whether the features have the same lengths with the corresponding targets (False for Seq2Seq models)
-         :param logger:
-            logger
-         :return:
-            features, targets, all_keys
+
+         :variables:
+            max_utt_len, features, targets, all_keys
          """
-
-        self.logger = logger if logger else logging.getLogger('Dataset')
-        self.logger.info("Dataset initialization")
-
-        """ If reading configures are not lists, convert them to lists """
-        feature_config_parms = feature_config_parms if isinstance(feature_config_parms, list) else [feature_config_parms]
-        target_config_parms  = target_config_parms  if isinstance(target_config_parms,  list) else [target_config_parms]
+        logger.info("Dataset initialization")
 
         self.max_utt_len = max_utt_len
         self.features = self._get_all_data(feature_config_parms)
@@ -112,11 +106,9 @@ class Dataset(object):
 
     def _verify_data(self, verify_length):
         """ Verify all keys have labels. If not, delete the key. """
-
-        self.logger.info("Dataset verifying data")
+        logger.info("Dataset verifying data")
 
         data_set = [self.features, self.targets]
-
         # get the intersection of all the keys of dataset
         all_keys = data_set[0][0]['name2idx'].keys()
         for data in data_set:
@@ -127,16 +119,16 @@ class Dataset(object):
         all_keys_set = set(all_keys)
         for d, data in enumerate(data_set):
             for i, item in enumerate(data):
-                empty_keys_list = list( set( item['name2idx'].keys() ) - all_keys_set )
+                empty_keys_list = list(set(item['name2idx'].keys() ) - all_keys_set)
 
-        if (len(empty_keys_list)>0):
-            item['nUtts'] -= len(empty_keys_list)
-            for key in empty_keys_list:
-                key2idx0 = item['name2idx'][key]
-                item['total_nframes'] -= item['nframes'][key2idx0]
+                if (len(empty_keys_list)>0):
+                    item['nUtts'] -= len(empty_keys_list)
+                    for key in empty_keys_list:
+                        key2idx0 = item['name2idx'][key]
+                        item['total_nframes'] -= item['nframes'][key2idx0]
 
-            not_found_info = empty_keys_list[:min(4,len(empty_keys_list))]
-            self.logger.warning("reject\n\t{} \n\t{} \n\ttotal {} frames in {} out of {} utterances, {} files not found in other data or labels".format('\n\t'.join(not_found_info), '.'*50, item['total_nframes'], item['nUtts'], item['nUtts']+len(empty_keys_list), len(empty_keys_list)))
+                    not_found_info = empty_keys_list[:min(4,len(empty_keys_list))]
+                    logger.warning("reject\n\t{} \n\t{} \n\ttotal {} frames in {} out of {} utterances, {} files not found in other data or labels".format('\n\t'.join(not_found_info), '.'*50, item['total_nframes'], item['nUtts'], item['nUtts']+len(empty_keys_list), len(empty_keys_list)))
 
         """ Verify Lengths """
         data_set = self.features + self.targets
@@ -149,12 +141,15 @@ class Dataset(object):
             for j in range(1, len(data_set)):
                 key2idx0 = data_set[j]['name2idx'][key]
                 if (standard_len != data_set[j]['nframes'][key2idx0]):
-                    self.logger.error("Inconsistent length in input&label {} utterance {} {} vs. {} input0".format(j, key, data_set[j]['nframes'][key2idx0], standard_len))
+                    logger.error("Inconsistent length in input&label {} utterance {} {} vs. {} input0".format(j, key, data_set[j]['nframes'][key2idx0], standard_len))
         return all_keys
 
 
     def _get_all_data(self, config_params):
         """ Read inputs and targets."""
+        """ If reading configure is not list, convert it to list."""
+        config_params = config_params if isinstance(config_params, list) else [config_params]
+
         data = []
         for i, config in enumerate(config_params):
             if config is None: continue
@@ -167,11 +162,9 @@ class Dataset(object):
             elif data_item['data_type'] == "ALI":
                 data_item['type'] = config['label_type']
                 self._read_ALI(file_name, config, data_item)
-            elif data_item['data_type'] == 'JSON':
-                self._read_JSON(file_name, config, data_item)
 
             data.append(data_item)
-            self.logger.info("Dataset %d: %d frames in %d utterances" % (i, data[i]['total_nframes'], data[i]['nUtts']))
+            logger.info("Dataset %d: %d frames in %d utterances" % (i, data[i]['total_nframes'], data[i]['nUtts']))
 
         return data
 
@@ -188,7 +181,7 @@ class Dataset(object):
         data['data']    = feats;        data['name2idx']      = name2idx
         data['start_f'] = feat_start_f; data['nframes']       = feat_nframes
         data['nUtts']   = len(feats);   data['total_nframes'] = sum(feat_nframes)
-        self.logger.info("Reading script file %s ... %d entries." % (file_name, len(feats)))
+        logger.info("Reading script file %s ... %d entries." % (file_name, len(feats)))
 
 
     def _read_HTK_feats_SCP(self, scp_file_name=None):
@@ -239,7 +232,7 @@ class Dataset(object):
                     raise Exception("FormatError: an error occur while reading HTK SCP file(%s), duplicate input name: %s" % (scp_file_name, feat_name))
 
         if skip_cnt > 0:
-            self.logger.info("minibatchutterancesource: skipping %d files because exceeding maxUtteranceLength (%d frames)" % (skip_cnt, self.max_utt_len) )
+            logger.info("minibatchutterancesource: skipping %d files because exceeding maxUtteranceLength (%d frames)" % (skip_cnt, self.max_utt_len) )
         return (feats, name2idx, feat_start_f, feat_nframes)
 
 
@@ -296,7 +289,7 @@ class Dataset(object):
                     raise Exception("FormatError: an error occur while reading Kaldi SCP file(%s), duplicate input name: %s" % (scp_file_name, feat_name))
 
         if skip_cnt > 0:
-            self.logger.info("minibatchutterancesource: skipping %d files because exceeding maxUtteranceLength (%d frames)" % (skip_cnt, self.max_utt_len) )
+            logger.info("minibatchutterancesource: skipping %d files because exceeding maxUtteranceLength (%d frames)" % (skip_cnt, self.max_utt_len) )
         return (feats, name2idx, feat_start_f, feat_nframes)
 
 
@@ -310,17 +303,19 @@ class Dataset(object):
             (labels, name2idx, lab_nframes) = self._read_HTK_MLF(ali_file_name)
         elif data['format'] == "Kaldi":
             (labels, name2idx, lab_nframes) = self._read_Kaldi_align_SCP(ali_file_name)
+        elif data['format'] == 'JSON':
+            (labels, name2idx, lab_nframes) = self._read_JSON_align(ali_file_name)
 
         if 'label_mapping' in config_parms:
             label_mapping_path = config_parms['label_mapping']
             (label_mapping, _) = self._read_label_mapping(label_mapping_path)
-            self.logger.info("Total %d state names in state list %s" % (len(label_mapping), label_mapping_path))
+            logger.info("Total %d state names in state list %s" % (len(label_mapping), label_mapping_path))
         else:
             label_mapping = None
         data['data']    = labels;       data['name2idx']      = name2idx
         data['nframes'] = lab_nframes;  data['label_mapping'] = label_mapping
         data['nUtts']   = len(labels);  data['total_nframes'] = sum(lab_nframes)
-        self.logger.info("Reading Alignment file %s ... total %d entries." % (ali_file_name, len(labels)))
+        logger.info("Reading Alignment file %s ... total %d entries." % (ali_file_name, len(labels)))
 
 
     def _read_HTK_MLF(self, mlf_file_name=None, delete_toolong=True):
@@ -435,8 +430,7 @@ class Dataset(object):
         return labels, name2idx, lab_nframes
 
 
-    # TODO
-    def _read_JSON(self, json_file_name, config_parm, data):
+    def _read_JSON_align(self, json_file_name):
         """ Read the targets as well as other information in JSON format:
          {
            "utts": {
@@ -449,33 +443,20 @@ class Dataset(object):
            }
          }
         """
-        def read_json_file(json_file_name):
-            if (json_file_name == None or not os.path.exists(json_file_name)):
-                raise Exception("FileNonExistError: an error occur while reading JSON file({0}), File Non-exists".format(json_file_name))
+        if (json_file_name == None or not os.path.exists(json_file_name)):
+            raise Exception("FileNonExistError: an error occur while reading JSON file({0}), File Non-exists".format(json_file_name))
 
-            labels = []
-            name2idx = {}
-            lab_nframes = []
+        labels = []
+        name2idx = {}
+        lab_nframes = []
 
-            with open(json_file_name, 'r') as file:
-                json_file = json.load(file)['utts']
+        with open(json_file_name, 'r') as file:
+            json_file = json.load(file)['utts']
 
-            utts = list(json_file.keys())
-            for i, utt in enumerate(utts):
-                tgt_string_list = json_file[utt]['targetid'].split(' ')
-                labels.append([int(tgt) for tgt in tgt_string_list])
-                name2idx[utt] = i
-                lab_nframes.append(int(json_file[utt]['olen']))
-            return (labels, name2idx, lab_nframes)
-
-        (labels, name2idx, lab_nframes) = read_json_file(json_file_name)
-        if 'label_mapping' in config_parm:
-            label_mapping_path = config_parm['label_mapping']
-            (label_mapping, _) = self._read_label_mapping(label_mapping_path)
-            self.logger.info("Total %d state names in state list %s" % (len(label_mapping), label_mapping_path))
-        else:
-            label_mapping = None
-        data['data']    = labels;       data['name2idx']      = name2idx
-        data['nframes'] = lab_nframes;  data['label_mapping'] = label_mapping
-        data['nUtts']   = len(labels);  data['total_nframes'] = sum(lab_nframes)
-        self.logger.info("Reading JSON file %s ... total %d entries." % (json_file_name, len(labels)))
+        utts = list(json_file.keys())
+        for i, utt in enumerate(utts):
+            tgt_string_list = json_file[utt]['targetid'].split(' ')
+            labels.append([int(tgt) for tgt in tgt_string_list])
+            name2idx[utt] = i
+            lab_nframes.append(int(json_file[utt]['olen']))
+        return (labels, name2idx, lab_nframes)

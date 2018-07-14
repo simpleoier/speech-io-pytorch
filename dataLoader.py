@@ -36,7 +36,7 @@ _use_shared_memory = False
 """Whether to use shared memory in default_collate"""
 
 logging.basicConfig(format='[%(name)s] %(levelname)s %(asctime)s: %(message)s', datefmt="%m-%d %H:%M:%S", level=logging.DEBUG)
-
+logger = logging.getLogger('DataLoader')
 
 
 class ExceptionWrapper(object):
@@ -213,8 +213,7 @@ class DataLoaderIter(object):
             normalize()
     """
     def __init__(self, dataloader):
-        self.logger = dataloader.logger
-        self.logger.info('DataLoaderIterator initialization close.')
+        logger.info('DataLoaderIterator initialization close.')
 
         self.dataset = dataloader.dataset
         self.batch_size = dataloader.batch_size
@@ -465,7 +464,7 @@ class DataLoaderIter(object):
             start_end_index_update = start_end_index_utts_mode
 
         # Until the random block is full
-        # TODO: this procedure needs to be modified to be an online loading version
+        # TODO: this procedure needs to be modified to be an multi-process loading version
         #       i.e. loading while consuming the data in _next()
         while True:
             key = self.all_keys[self.utt_iter_idx]
@@ -485,7 +484,7 @@ class DataLoaderIter(object):
 
 
     def _get_block_data_from_keys(self, block_keys, frame_mode):
-        # Read Data of keys list
+        # Read the Data of key list
         dataset = [self.dataset.features, self.dataset.targets]
         data_block = [[], []]
 
@@ -575,7 +574,7 @@ class DataLoaderIter(object):
 
     def priors(self):
         """ return prior for ALI."""
-        self.logger.info("DataLoaderIterator: Priors")
+        logger.info("DataLoaderIterator: Priors")
         priors = [[None] * len(self.dataset.features),
                  [None] * len(self.dataset.targets)]
         dataset = [self.dataset.features, self.dataset.targets]
@@ -620,7 +619,7 @@ class DataLoaderIter(object):
                         params[data_idx][item_idx] = np.zeros(item['dim'])
 
         def Mean():
-            self.logger.info("DataLoaderIterator: Normalization -- means")
+            logger.info("DataLoaderIterator: Normalization -- means")
             initialize(mean_data_block)
 
             for block_keys, nsamples in _get_block_keys():
@@ -635,7 +634,7 @@ class DataLoaderIter(object):
             return mean_data_block
 
         def Std():
-            self.logger.info("DataLoaderIterator: Normalization -- standard variance")
+            logger.info("DataLoaderIterator: Normalization -- standard variance")
             initialize(std_data_block)
 
             for block_keys, nsamples in _get_block_keys():
@@ -655,7 +654,7 @@ class DataLoaderIter(object):
             return std_data_block
 
         def MeanStd():
-            self.logger.info("DataLoaderIterator: Normalization -- mean & standard variance")
+            logger.info("DataLoaderIterator: Normalization -- mean & standard variance")
             initialize(mean_data_block)
             initialize(std_data_block)
 
@@ -764,8 +763,7 @@ class DataLoader(DataLoader):
                  frame_mode=False, permutation=True, random_size=None,
                  epoch_size=None, truncate_size=0, utt_iter_idx=0,
                  random_seed=19931225, padding_value=0):
-        self.logger = logging.getLogger('DataLoader')
-        self.logger.info('DataLoader initialization')
+        logger.info('DataLoader initialization')
 
         self.dataset = dataset
         self.num_workers = num_workers
@@ -782,7 +780,6 @@ class DataLoader(DataLoader):
         self.random_size = random_size if random_size else self.dataset.features[0]['total_nframes']
         self.epoch_size  = epoch_size if epoch_size else self.random_size
         self.truncate_size = truncate_size
-
 
 
     def __iter__(self):
